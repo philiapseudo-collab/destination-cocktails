@@ -1,0 +1,83 @@
+package config
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/joho/godotenv"
+	"github.com/kelseyhightower/envconfig"
+)
+
+// Config holds all application configuration
+type Config struct {
+	AppPort    string `envconfig:"APP_PORT" default:"8080"`
+	AppEnv     string `envconfig:"APP_ENV" default:"development"`
+
+	// Database
+	DBHost     string `envconfig:"DB_HOST" default:"localhost"`
+	DBPort     string `envconfig:"DB_PORT" default:"5432"`
+	DBUser     string `envconfig:"DB_USER" default:"postgres"`
+	DBPassword string `envconfig:"DB_PASSWORD" default:"postgres"`
+	DBName     string `envconfig:"DB_NAME" default:"destination_cocktails"`
+	DBURL      string `envconfig:"DB_URL"`
+
+	// Redis
+	RedisURL      string `envconfig:"REDIS_URL" default:"redis://localhost:6379"`
+	RedisPassword string `envconfig:"REDIS_PASSWORD" default:""`
+
+	// WhatsApp
+	WhatsAppToken        string `envconfig:"WHATSAPP_TOKEN"`
+	WhatsAppPhoneNumberID string `envconfig:"WHATSAPP_PHONE_NUMBER_ID"`
+	WhatsAppVerifyToken  string `envconfig:"WHATSAPP_VERIFY_TOKEN"`
+
+	// Kopo Kopo
+	KopoKopoAPIKey     string `envconfig:"KOPOKOPO_API_KEY"`
+	KopoKopoSecret     string `envconfig:"KOPOKOPO_SECRET"`
+	KopoKopoBaseURL    string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
+	KopoKopoTillNumber string `envconfig:"KOPOKOPO_TILL_NUMBER"`
+	KopoKopoAccessToken string `envconfig:"KOPOKOPO_ACCESS_TOKEN"` // Long-lived token or obtained via OAuth
+	WebhookBaseURL      string `envconfig:"WEBHOOK_BASE_URL"`       // Your Railway/public URL for callbacks
+
+	// Pesapal
+	PesapalClientID     string `envconfig:"PESAPAL_CLIENT_ID"`
+	PesapalClientSecret string `envconfig:"PESAPAL_CLIENT_SECRET"`
+	PesapalEnvironment  string `envconfig:"PESAPAL_ENVIRONMENT" default:"sandbox"`
+}
+
+var instance *Config
+
+// Load initializes and returns the singleton Config instance
+func Load() (*Config, error) {
+	if instance != nil {
+		return instance, nil
+	}
+
+	// Load .env file if it exists (for local development)
+	if _, err := os.Stat(".env"); err == nil {
+		if err := godotenv.Load(); err != nil {
+			return nil, fmt.Errorf("error loading .env file: %w", err)
+		}
+	}
+
+	cfg := &Config{}
+	if err := envconfig.Process("", cfg); err != nil {
+		return nil, fmt.Errorf("error processing environment variables: %w", err)
+	}
+
+	// Build DBURL if not provided
+	if cfg.DBURL == "" {
+		cfg.DBURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+			cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)
+	}
+
+	instance = cfg
+	return instance, nil
+}
+
+// Get returns the singleton Config instance (must call Load first)
+func Get() *Config {
+	if instance == nil {
+		panic("config not loaded: call config.Load() first")
+	}
+	return instance
+}
