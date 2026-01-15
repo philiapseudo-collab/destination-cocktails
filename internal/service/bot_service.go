@@ -37,6 +37,30 @@ func NewBotService(repo core.ProductRepository, session core.SessionRepository, 
 func (b *BotService) HandleIncomingMessage(phone string, message string, messageType string) error {
 	ctx := context.Background()
 
+	// Global Reset Check: Check for reset keywords before processing state
+	normalizedMessage := strings.ToLower(strings.TrimSpace(message))
+	resetKeywords := []string{"hi", "hello", "start", "restart", "reset", "menu"}
+	
+	for _, keyword := range resetKeywords {
+		if normalizedMessage == keyword {
+			// Create a completely fresh session
+			newSession := &core.Session{
+				State:            "START",
+				Cart:             []core.CartItem{}, // Explicit empty slice
+				CurrentCategory:  "",
+				CurrentProductID: "",
+			}
+			
+			// Save the fresh session to Redis
+			if err := b.Session.Set(ctx, phone, newSession, 7200); err != nil {
+				return fmt.Errorf("failed to reset session: %w", err)
+			}
+			
+			// Call handleStart to send welcome message and return early
+			return b.handleStart(ctx, phone, newSession, message)
+		}
+	}
+
 	// Get or create session
 	session, err := b.Session.Get(ctx, phone)
 	if err != nil {
