@@ -120,7 +120,16 @@ func main() {
 	}
 
 	// Initialize WhatsApp client
+	log.Printf("Initializing WhatsApp client (Phone Number ID length: %d, Token length: %d)", 
+		len(cfg.WhatsAppPhoneNumberID), len(cfg.WhatsAppToken))
+	if cfg.WhatsAppPhoneNumberID == "" {
+		log.Fatalf("CRITICAL: WHATSAPP_PHONE_NUMBER_ID environment variable is not set")
+	}
+	if cfg.WhatsAppToken == "" {
+		log.Fatalf("CRITICAL: WHATSAPP_TOKEN environment variable is not set")
+	}
 	whatsappClient := whatsapp.NewClient(cfg.WhatsAppPhoneNumberID, cfg.WhatsAppToken)
+	log.Printf("WhatsApp client initialized with Phone Number ID: %s", cfg.WhatsAppPhoneNumberID)
 
 	// Initialize Payment client
 	paymentClient, err := payment.NewClient()

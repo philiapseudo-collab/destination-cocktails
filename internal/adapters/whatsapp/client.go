@@ -22,6 +22,13 @@ type Client struct {
 
 // NewClient creates a new WhatsApp client
 func NewClient(phoneNumberID, token string) *Client {
+	if phoneNumberID == "" {
+		panic("WHATSAPP_PHONE_NUMBER_ID is required but not set")
+	}
+	if token == "" {
+		panic("WHATSAPP_TOKEN is required but not set")
+	}
+	
 	return &Client{
 		baseURL:       "https://graph.facebook.com/v19.0",
 		phoneNumberID: phoneNumberID,
@@ -47,7 +54,11 @@ func (c *Client) SendMessage(ctx context.Context, to string, payload interface{}
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", maskToken(c.token)))
+
+	// Log request details (masked for security)
+	fmt.Printf("WhatsApp API Request: POST %s (to: %s, phone_id: %s)\n", 
+		url, to, c.phoneNumberID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -55,12 +66,25 @@ func (c *Client) SendMessage(ctx context.Context, to string, payload interface{}
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("whatsapp API error: status %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("whatsapp API error: status %d, url: %s, phone_number_id: %s, body: %s", 
+			resp.StatusCode, url, c.phoneNumberID, string(body))
 	}
 
 	return nil
+}
+
+// maskToken masks a token for logging (shows first 3 and last 3 chars)
+func maskToken(token string) string {
+	if token == "" {
+		return "<empty>"
+	}
+	if len(token) <= 6 {
+		return "***"
+	}
+	return token[:3] + "***" + token[len(token)-3:]
 }
 
 // SendText sends a simple text message
