@@ -6,13 +6,33 @@ import (
 	"log"
 	"time"
 
+	"github.com/dumu-tech/destination-cocktails/internal/adapters/http"
+	"github.com/dumu-tech/destination-cocktails/internal/adapters/payment"
+	"github.com/dumu-tech/destination-cocktails/internal/adapters/postgres"
+	redisRepo "github.com/dumu-tech/destination-cocktails/internal/adapters/redis"
+	"github.com/dumu-tech/destination-cocktails/internal/adapters/whatsapp"
 	"github.com/dumu-tech/destination-cocktails/internal/config"
+	"github.com/dumu-tech/destination-cocktails/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/dumu-tech/destination-cocktails/internal/core"
 )
+
+// orderRepoAdapter adapts core.OrderRepository to http.OrderRepositoryHandler
+type orderRepoAdapter struct {
+	repo core.OrderRepository
+}
+
+func (a *orderRepoAdapter) UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error {
+	return a.repo.UpdateStatus(ctx, id, status)
+}
+
+func (a *orderRepoAdapter) GetOrderByID(ctx context.Context, id string) (*core.Order, error) {
+	return a.repo.GetByID(ctx, id)
+}
 
 func main() {
 	// Load configuration
@@ -56,6 +76,47 @@ func main() {
 	}
 	log.Println("✓ PostgreSQL connection established")
 
+	// Initialize repositories using GORM (we still need pgxpool for some operations)
+	postgresRepo, err := postgres.NewRepository(cfg.DBURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize postgres repository: %v", err)
+	}
+
+	// Initialize Redis repository
+	redisRepository := redisRepo.NewRepository(rdb)
+
+	// Initialize WhatsApp client
+	whatsappClient := whatsapp.NewClient(cfg.WhatsAppPhoneNumberID, cfg.WhatsAppToken)
+
+	// Initialize Payment client
+	paymentClient, err := payment.NewClient()
+	if err != nil {
+		log.Fatalf("Failed to initialize payment client: %v", err)
+	}
+
+	// Initialize Bot Service
+	botService := service.NewBotService(
+		postgresRepo.ProductRepository(),
+		redisRepository,
+		whatsappClient,
+		paymentClient,
+		postgresRepo.OrderRepository(),
+		postgresRepo.UserRepository(),
+	)
+
+	// Create adapter for OrderRepository to match OrderRepositoryHandler interface
+	orderRepoAdapter := &orderRepoAdapter{
+		repo: postgresRepo.OrderRepository(),
+	}
+
+	// Initialize HTTP Handler
+	httpHandler := http.NewHandler(
+		botService,
+		paymentClient,
+		orderRepoAdapter,
+		whatsappClient,
+	)
+
 	// Initialize Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:      "Destination Cocktails API",
@@ -73,6 +134,20 @@ func main() {
 			"project": "destination-cocktails",
 		})
 	})
+
+	// WhatsApp Webhook routes
+	// GET for webhook verification (WhatsApp requires this)
+	app.Get("/webhook", httpHandler.VerifyWebhook)
+	// POST for receiving messages
+	app.Post("/webhook", httpHandler.ReceiveMessage)
+
+	// Payment webhook route
+	app.Post("/api/webhooks/payment", httpHandler.HandlePaymentWebhook)
+
+	log.Println("✓ Routes registered:")
+	log.Println("  GET  /webhook - WhatsApp webhook verification")
+	log.Println("  POST /webhook - WhatsApp message webhook")
+	log.Println("  POST /api/webhooks/payment - Payment webhook")
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.AppPort)

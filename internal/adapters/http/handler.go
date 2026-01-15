@@ -67,16 +67,33 @@ func (h *Handler) VerifyWebhook(c *fiber.Ctx) error {
 	token := c.Query("hub.verify_token")
 	challenge := c.Query("hub.challenge")
 
+	// Log for debugging (remove sensitive info in production)
+	fmt.Printf("Webhook verification request - mode: %s, token provided: %s, expected token length: %d\n", 
+		mode, 
+		maskedToken(token), 
+		len(h.verifyToken))
+
 	if mode != "subscribe" {
+		fmt.Printf("Webhook verification failed: invalid mode '%s' (expected 'subscribe')\n", mode)
 		return c.Status(http.StatusBadRequest).SendString("Invalid mode")
 	}
 
 	if token != h.verifyToken {
+		fmt.Printf("Webhook verification failed: token mismatch\n")
 		return c.Status(http.StatusForbidden).SendString("Invalid verify token")
 	}
 
+	fmt.Println("Webhook verification successful")
 	// Return challenge as plain text (not JSON)
 	return c.SendString(challenge)
+}
+
+// maskedToken masks a token for logging (shows first 3 and last 3 chars)
+func maskedToken(token string) string {
+	if len(token) <= 6 {
+		return "***"
+	}
+	return token[:3] + "***" + token[len(token)-3:]
 }
 
 // ReceiveMessage handles POST requests for incoming WhatsApp messages

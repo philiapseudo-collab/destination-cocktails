@@ -8,15 +8,17 @@ import (
 	"time"
 
 	"github.com/dumu-tech/destination-cocktails/internal/core"
+	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// Repository implements ProductRepository and OrderRepository using GORM with pgx driver
+// Repository implements ProductRepository, OrderRepository, and UserRepository using GORM with pgx driver
 type Repository struct {
 	db                *gorm.DB
 	productRepository *productRepository
 	orderRepository   *orderRepository
+	userRepository    *userRepository
 }
 
 // productRepository implements ProductRepository methods
@@ -26,6 +28,11 @@ type productRepository struct {
 
 // orderRepository implements OrderRepository methods  
 type orderRepository struct {
+	*Repository
+}
+
+// userRepository implements UserRepository methods
+type userRepository struct {
 	*Repository
 }
 
@@ -41,6 +48,7 @@ func NewRepository(dbURL string) (*Repository, error) {
 	// Set up embedded types
 	repo.productRepository = &productRepository{Repository: repo}
 	repo.orderRepository = &orderRepository{Repository: repo}
+	repo.userRepository = &userRepository{Repository: repo}
 	return repo, nil
 }
 
@@ -52,6 +60,11 @@ func (r *Repository) ProductRepository() core.ProductRepository {
 // OrderRepository returns the OrderRepository interface implementation
 func (r *Repository) OrderRepository() core.OrderRepository {
 	return r.orderRepository
+}
+
+// UserRepository returns the UserRepository interface implementation
+func (r *Repository) UserRepository() core.UserRepository {
+	return r.userRepository
 }
 
 // ProductRepository implementation
@@ -124,7 +137,7 @@ func (r *productRepository) GetMenu(ctx context.Context) (map[string][]*core.Pro
 }
 
 // UpdateStock updates the stock quantity for a product
-func (r *Repository) UpdateStock(ctx context.Context, id string, quantity int) error {
+func (r *productRepository) UpdateStock(ctx context.Context, id string, quantity int) error {
 	result := r.db.WithContext(ctx).Table("products").
 		Where("id = ?", id).
 		Update("stock_quantity", quantity)
@@ -190,7 +203,7 @@ func (r *orderRepository) GetByID(ctx context.Context, id string) (*core.Order, 
 }
 
 // GetByUserID retrieves all orders for a specific user
-func (r *Repository) GetByUserID(ctx context.Context, userID string) ([]*core.Order, error) {
+func (r *orderRepository) GetByUserID(ctx context.Context, userID string) ([]*core.Order, error) {
 	var orderModels []OrderModel
 	if err := r.db.WithContext(ctx).Table("orders").
 		Where("user_id = ?", userID).
@@ -394,4 +407,76 @@ func (oi *OrderItemModel) ToDomain() *core.OrderItem {
 		Quantity:    oi.Quantity,
 		PriceAtTime: oi.PriceAtTime,
 	}
+}
+
+// UserRepository implementation
+
+// UserModel represents the users table structure
+type UserModel struct {
+	ID          string    `gorm:"column:id;type:uuid;primaryKey;default:uuid_generate_v4()"`
+	PhoneNumber string    `gorm:"column:phone_number;type:varchar(20);not null;uniqueIndex"`
+	Name        string    `gorm:"column:name;type:varchar(255)"`
+	CreatedAt   time.Time `gorm:"column:created_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
+}
+
+func (UserModel) TableName() string {
+	return "users"
+}
+
+// ToDomain converts UserModel to core.User
+func (u *UserModel) ToDomain() *core.User {
+	return &core.User{
+		ID:          u.ID,
+		PhoneNumber: u.PhoneNumber,
+		Name:        u.Name,
+		CreatedAt:   u.CreatedAt,
+	}
+}
+
+// GetByPhone retrieves a user by phone number
+func (r *userRepository) GetByPhone(ctx context.Context, phone string) (*core.User, error) {
+	var userModel UserModel
+	if err := r.db.WithContext(ctx).Table("users").Where("phone_number = ?", phone).First(&userModel).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("user not found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	return userModel.ToDomain(), nil
+}
+
+// Create creates a new user
+func (r *userRepository) Create(ctx context.Context, user *core.User) error {
+	userModel := &UserModel{
+		ID:          user.ID,
+		PhoneNumber: user.PhoneNumber,
+		Name:        user.Name,
+		CreatedAt:   user.CreatedAt,
+	}
+	if err := r.db.WithContext(ctx).Table("users").Create(userModel).Error; err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+	return nil
+}
+
+// GetOrCreateByPhone retrieves a user by phone or creates one if not found
+func (r *userRepository) GetOrCreateByPhone(ctx context.Context, phone string) (*core.User, error) {
+	user, err := r.GetByPhone(ctx, phone)
+	if err == nil {
+		return user, nil
+	}
+
+	// User doesn't exist, create new one
+	newUser := &core.User{
+		ID:          uuid.New().String(),
+		PhoneNumber: phone,
+		Name:        "",
+		CreatedAt:   time.Now(),
+	}
+
+	if err := r.Create(ctx, newUser); err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return newUser, nil
 }
