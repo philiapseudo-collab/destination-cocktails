@@ -145,9 +145,10 @@ func main() {
 	app.Post("/api/webhooks/payment", httpHandler.HandlePaymentWebhook)
 
 	log.Println("✓ Routes registered:")
-	log.Println("  GET  /webhook - WhatsApp webhook verification")
+	log.Printf("  GET  /webhook - WhatsApp webhook verification (verify token configured: %v)", cfg.WhatsAppVerifyToken != "")
 	log.Println("  POST /webhook - WhatsApp message webhook")
 	log.Println("  POST /api/webhooks/payment - Payment webhook")
+	log.Printf("✓ Server ready on port %s", cfg.AppPort)
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.AppPort)

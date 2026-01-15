@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -51,8 +52,18 @@ type BotServiceHandler interface {
 // NewHandler creates a new HTTP handler
 func NewHandler(botService BotServiceHandler, paymentGateway PaymentGatewayHandler, orderRepo OrderRepositoryHandler, whatsappGateway WhatsAppGatewayHandler) *Handler {
 	cfg := config.Get()
+	verifyToken := strings.TrimSpace(cfg.WhatsAppVerifyToken)
+	
+	if verifyToken == "" {
+		log.Printf("WARNING: WHATSAPP_VERIFY_TOKEN is not set or empty!")
+	}
+	
+	fmt.Printf("Handler initialized - Verify token length: %d, starts with: %s\n", 
+		len(verifyToken), 
+		maskToken(verifyToken))
+	
 	return &Handler{
-		verifyToken:    cfg.WhatsAppVerifyToken,
+		verifyToken:    verifyToken,
 		appSecret:      "", // TODO: Add APP_SECRET to config if available
 		botService:     botService,
 		paymentGateway: paymentGateway,
@@ -67,29 +78,39 @@ func (h *Handler) VerifyWebhook(c *fiber.Ctx) error {
 	token := c.Query("hub.verify_token")
 	challenge := c.Query("hub.challenge")
 
-	// Log for debugging (remove sensitive info in production)
-	fmt.Printf("Webhook verification request - mode: %s, token provided: %s, expected token length: %d\n", 
-		mode, 
-		maskedToken(token), 
-		len(h.verifyToken))
+	// Log for debugging
+	log.Printf("Webhook verification request received:")
+	log.Printf("  Mode: %s", mode)
+	log.Printf("  Token provided: %s (length: %d)", maskToken(token), len(token))
+	log.Printf("  Token expected: %s (length: %d)", maskToken(h.verifyToken), len(h.verifyToken))
+	log.Printf("  Challenge: %s", challenge)
 
 	if mode != "subscribe" {
-		fmt.Printf("Webhook verification failed: invalid mode '%s' (expected 'subscribe')\n", mode)
+		log.Printf("Webhook verification FAILED: invalid mode '%s' (expected 'subscribe')", mode)
 		return c.Status(http.StatusBadRequest).SendString("Invalid mode")
 	}
 
-	if token != h.verifyToken {
-		fmt.Printf("Webhook verification failed: token mismatch\n")
+	// Trim whitespace from both tokens for comparison
+	providedToken := strings.TrimSpace(token)
+	expectedToken := strings.TrimSpace(h.verifyToken)
+
+	if providedToken != expectedToken {
+		log.Printf("Webhook verification FAILED: token mismatch")
+		log.Printf("  Provided: [%s] (bytes: %v)", providedToken, []byte(providedToken))
+		log.Printf("  Expected: [%s] (bytes: %v)", expectedToken, []byte(expectedToken))
 		return c.Status(http.StatusForbidden).SendString("Invalid verify token")
 	}
 
-	fmt.Println("Webhook verification successful")
-	// Return challenge as plain text (not JSON)
+	log.Println("Webhook verification SUCCESSFUL - returning challenge")
+	// Return challenge as plain text (not JSON) - this is what WhatsApp expects
 	return c.SendString(challenge)
 }
 
-// maskedToken masks a token for logging (shows first 3 and last 3 chars)
-func maskedToken(token string) string {
+// maskToken masks a token for logging (shows first 3 and last 3 chars)
+func maskToken(token string) string {
+	if token == "" {
+		return "<empty>"
+	}
 	if len(token) <= 6 {
 		return "***"
 	}
