@@ -21,6 +21,25 @@ import (
 	"github.com/dumu-tech/destination-cocktails/internal/core"
 )
 
+// maskURL masks sensitive parts of a URL for logging
+func maskURL(url string) string {
+	if url == "" {
+		return "<empty>"
+	}
+	// Just show the protocol and host, mask the rest
+	if len(url) < 20 {
+		return url[:min(10, len(url))] + "***"
+	}
+	return url[:20] + "***"
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // orderRepoAdapter adapts core.OrderRepository to http.OrderRepositoryHandler
 type orderRepoAdapter struct {
 	repo core.OrderRepository
@@ -41,49 +60,64 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	log.Println("Initializing connections...")
+	
+	// Create context for initialization
+	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer initCancel()
+
 	// Connect to Redis
+	var rdb *redis.Client
+	var redisRepository *redisRepo.Repository
+	log.Printf("Connecting to Redis...")
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
-		log.Fatalf("Failed to parse Redis URL: %v", err)
+		log.Printf("WARNING: Failed to parse Redis URL: %v", err)
+		log.Println("Server will continue without Redis (some features may be unavailable)")
+	} else {
+		if cfg.RedisPassword != "" {
+			redisOpts.Password = cfg.RedisPassword
+		}
+
+		rdb = redis.NewClient(redisOpts)
+		
+		// Ping Redis to verify connection (with timeout)
+		pingCtx, pingCancel := context.WithTimeout(initCtx, 5*time.Second)
+		if err := rdb.Ping(pingCtx).Err(); err != nil {
+			log.Printf("WARNING: Failed to connect to Redis: %v", err)
+			log.Println("Server will continue without Redis (some features may be unavailable)")
+			rdb.Close()
+			rdb = nil
+		} else {
+			log.Println("✓ Redis connection established")
+			redisRepository = redisRepo.NewRepository(rdb)
+			defer rdb.Close()
+		}
+		pingCancel()
 	}
-
-	if cfg.RedisPassword != "" {
-		redisOpts.Password = cfg.RedisPassword
-	}
-
-	rdb := redis.NewClient(redisOpts)
-	defer rdb.Close()
-
-	// Ping Redis to verify connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
-	}
-	log.Println("✓ Redis connection established")
 
 	// Connect to PostgreSQL
-	dbpool, err := pgxpool.New(ctx, cfg.DBURL)
+	log.Printf("Connecting to PostgreSQL...")
+	dbpool, err := pgxpool.New(initCtx, cfg.DBURL)
 	if err != nil {
-		log.Fatalf("Failed to create connection pool: %v", err)
+		log.Fatalf("CRITICAL: Failed to create PostgreSQL connection pool: %v", err)
 	}
 	defer dbpool.Close()
 
 	// Ping PostgreSQL to verify connection
-	if err := dbpool.Ping(ctx); err != nil {
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	pingCtx, pingCancel := context.WithTimeout(initCtx, 10*time.Second)
+	if err := dbpool.Ping(pingCtx); err != nil {
+		log.Fatalf("CRITICAL: Failed to connect to PostgreSQL: %v", err)
 	}
+	pingCancel()
 	log.Println("✓ PostgreSQL connection established")
 
 	// Initialize repositories using GORM (we still need pgxpool for some operations)
+	log.Println("Initializing PostgreSQL repository...")
 	postgresRepo, err := postgres.NewRepository(cfg.DBURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize postgres repository: %v", err)
+		log.Fatalf("CRITICAL: Failed to initialize postgres repository: %v", err)
 	}
-
-	// Initialize Redis repository
-	redisRepository := redisRepo.NewRepository(rdb)
 
 	// Initialize WhatsApp client
 	whatsappClient := whatsapp.NewClient(cfg.WhatsAppPhoneNumberID, cfg.WhatsAppToken)
@@ -94,7 +128,12 @@ func main() {
 		log.Fatalf("Failed to initialize payment client: %v", err)
 	}
 
-	// Initialize Bot Service
+	// Initialize Bot Service (Redis is optional but required for sessions)
+	log.Println("Initializing services...")
+	if redisRepository == nil {
+		log.Fatalf("CRITICAL: Redis is required for bot service. Please configure REDIS_URL environment variable.")
+	}
+	
 	botService := service.NewBotService(
 		postgresRepo.ProductRepository(),
 		redisRepository,
@@ -117,21 +156,32 @@ func main() {
 		whatsappClient,
 	)
 
-	// Initialize Fiber app
+	// Initialize Fiber app early so health checks work
+	log.Println("Initializing HTTP server...")
 	app := fiber.New(fiber.Config{
 		AppName:      "Destination Cocktails API",
 		ServerHeader: "Fiber",
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	})
 
 	// Middleware
 	app.Use(recover.New())
 	app.Use(logger.New())
 
-	// Health check route
+	// Health check route - responds immediately
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":  "ok",
 			"project": "destination-cocktails",
+		})
+	})
+	
+	// Early startup route for debugging
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"message": "Destination Cocktails API",
+			"status":  "running",
 		})
 	})
 
