@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 
 	"github.com/dumu-tech/destination-cocktails/internal/config"
 	"github.com/google/uuid"
@@ -89,6 +90,17 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Safety check: Don't run seeder if DB_URL points to localhost (likely misconfigured)
+	// This prevents accidental seeding during deployment when DB_URL is not set
+	dbURLLower := strings.ToLower(cfg.DBURL)
+	if cfg.DBURL == "" || 
+	   strings.Contains(dbURLLower, "localhost") || 
+	   (cfg.DBHost == "localhost" && !strings.Contains(dbURLLower, "railway")) {
+		log.Println("Seeder: DB_URL not configured or pointing to localhost. Skipping seed.")
+		log.Println("Seeder should be run manually with proper DB_URL configured.")
+		return
 	}
 
 	// Connect to database
