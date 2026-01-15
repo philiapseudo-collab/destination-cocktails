@@ -54,7 +54,7 @@ func (c *Client) SendMessage(ctx context.Context, to string, payload interface{}
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", maskToken(c.token)))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 
 	// Log request details (masked for security)
 	fmt.Printf("WhatsApp API Request: POST %s (to: %s, phone_id: %s)\n", 
