@@ -1,12 +1,11 @@
 package http
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -35,7 +34,7 @@ type PaymentGatewayHandler interface {
 // OrderRepositoryHandler defines the interface for order repository
 type OrderRepositoryHandler interface {
 	UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error
-	GetByID(ctx context.Context, id string) (*OrderResult, error)
+	GetOrderByID(ctx context.Context, id string) (*core.Order, error)
 }
 
 // WhatsAppGatewayHandler defines the interface for WhatsApp gateway
@@ -43,13 +42,6 @@ type WhatsAppGatewayHandler interface {
 	SendText(ctx context.Context, phone string, message string) error
 }
 
-// OrderResult represents order information
-type OrderResult struct {
-	ID            string
-	CustomerPhone string
-	TotalAmount   float64
-	Status        string
-}
 
 // BotServiceHandler defines the interface for bot service
 type BotServiceHandler interface {
@@ -171,7 +163,7 @@ func (h *Handler) ReceiveMessage(c *fiber.Ctx) error {
 }
 
 // verifySignature verifies the X-Hub-Signature-256 header using HMAC-SHA256
-func (h *Handler) verifySignature(signature, body []byte) bool {
+func (h *Handler) verifySignature(signature string, body []byte) bool {
 	// Signature format: sha256=<hex_string>
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "sha256" {
@@ -225,7 +217,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			fmt.Printf("Error updating order status: %v\n", err)
 		} else {
 			// Get order to find customer phone
-			order, err := h.orderRepo.GetByID(ctx, result.OrderID)
+			order, err := h.orderRepo.GetOrderByID(ctx, result.OrderID)
 			if err == nil && order != nil {
 				// Send WhatsApp notification to user
 				message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹", 

@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/dumu-tech/destination-cocktails/internal/config"
@@ -94,17 +96,53 @@ func main() {
 
 	// Safety check: Don't run seeder if DB_URL points to localhost (likely misconfigured)
 	// This prevents accidental seeding during deployment when DB_URL is not set
-	dbURLLower := strings.ToLower(cfg.DBURL)
-	if cfg.DBURL == "" || 
-	   strings.Contains(dbURLLower, "localhost") || 
-	   (cfg.DBHost == "localhost" && !strings.Contains(dbURLLower, "railway")) {
-		log.Println("Seeder: DB_URL not configured or pointing to localhost. Skipping seed.")
-		log.Println("Seeder should be run manually with proper DB_URL configured.")
+	// Allow seeding if:
+	// 1. ALLOW_SEED environment variable is explicitly set to "true"
+	// 2. DATABASE_URL or DB_URL contains "railway" (Railway deployment)
+	// 3. DATABASE_URL or DB_URL doesn't contain "localhost" and is not empty (production/remote database)
+	// 4. DB_HOST is set to a non-localhost value (e.g., Docker service name like "postgres")
+	allowSeed := strings.ToLower(os.Getenv("ALLOW_SEED")) == "true"
+	
+	// Check both DATABASE_URL (Railway) and DB_URL
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = cfg.DBURL
+	}
+	
+	dbURLLower := strings.ToLower(databaseURL)
+	dbHostLower := strings.ToLower(cfg.DBHost)
+	
+	// Check if we should allow seeding (production-ready checks)
+	shouldSeed := allowSeed ||
+		strings.Contains(dbURLLower, "railway") ||
+		strings.Contains(dbURLLower, ".railway.internal") ||
+		strings.Contains(dbURLLower, ".proxy.rlwy.net") ||
+		(!strings.Contains(dbURLLower, "localhost") && 
+		 !strings.Contains(dbURLLower, "127.0.0.1") && 
+		 databaseURL != "" &&
+		 databaseURL != fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+			cfg.DBUser, cfg.DBPassword, "localhost", cfg.DBPort, cfg.DBName)) ||
+		(cfg.DBHost != "" && dbHostLower != "localhost" && dbHostLower != "127.0.0.1")
+	
+	if !shouldSeed {
+		log.Println("Seeder: DB_URL/DATABASE_URL not configured or pointing to localhost. Skipping seed.")
+		log.Printf("Seeder: Current DB_URL value: %s", maskURL(cfg.DBURL))
+		log.Println("Seeder should be run manually with proper DB_URL/DATABASE_URL configured for production.")
+		log.Println("To allow seeding, set ALLOW_SEED=true or configure DATABASE_URL/DB_URL to point to a non-localhost database.")
 		return
 	}
 
+	// Use DATABASE_URL if available (Railway standard), otherwise use DB_URL
+	dbURL := cfg.DBURL
+	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+		dbURL = databaseURL
+		log.Println("Using DATABASE_URL from environment")
+	} else {
+		log.Println("Using DB_URL from config")
+	}
+
 	// Connect to database
-	db, err := gorm.Open(postgres.Open(cfg.DBURL), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dbURL), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -177,4 +215,19 @@ func main() {
 	}
 
 	log.Printf("Seeder completed: %d products processed (%d inserted, %d updated)", upserted, inserted, updated)
+}
+
+// maskURL masks sensitive parts of a database URL for logging
+func maskURL(url string) string {
+	if url == "" {
+		return "<empty>"
+	}
+	if len(url) < 20 {
+		return "<too short>"
+	}
+	// Show first 20 chars and last 10 chars, mask the middle
+	if len(url) < 50 {
+		return url[:20] + "..." + url[len(url)-10:]
+	}
+	return url[:20] + "..." + url[len(url)-10:]
 }

@@ -14,7 +14,19 @@ import (
 
 // Repository implements ProductRepository and OrderRepository using GORM with pgx driver
 type Repository struct {
-	db *gorm.DB
+	db                *gorm.DB
+	productRepository *productRepository
+	orderRepository   *orderRepository
+}
+
+// productRepository implements ProductRepository methods
+type productRepository struct {
+	*Repository
+}
+
+// orderRepository implements OrderRepository methods  
+type orderRepository struct {
+	*Repository
 }
 
 // NewRepository creates a new Postgres repository instance
@@ -25,13 +37,27 @@ func NewRepository(dbURL string) (*Repository, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	return &Repository{db: db}, nil
+	repo := &Repository{db: db}
+	// Set up embedded types
+	repo.productRepository = &productRepository{Repository: repo}
+	repo.orderRepository = &orderRepository{Repository: repo}
+	return repo, nil
+}
+
+// ProductRepository returns the ProductRepository interface implementation
+func (r *Repository) ProductRepository() core.ProductRepository {
+	return r.productRepository
+}
+
+// OrderRepository returns the OrderRepository interface implementation
+func (r *Repository) OrderRepository() core.OrderRepository {
+	return r.orderRepository
 }
 
 // ProductRepository implementation
 
 // GetByID retrieves a product by its ID
-func (r *Repository) GetByID(ctx context.Context, id string) (*core.Product, error) {
+func (r *productRepository) GetByID(ctx context.Context, id string) (*core.Product, error) {
 	var productModel ProductModel
 	if err := r.db.WithContext(ctx).Table("products").Where("id = ?", id).First(&productModel).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -43,7 +69,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*core.Product, err
 }
 
 // GetByCategory retrieves all products in a specific category
-func (r *Repository) GetByCategory(ctx context.Context, category string) ([]*core.Product, error) {
+func (r *productRepository) GetByCategory(ctx context.Context, category string) ([]*core.Product, error) {
 	var productModels []ProductModel
 	if err := r.db.WithContext(ctx).Table("products").
 		Where("category = ? AND is_active = ?", category, true).
@@ -59,7 +85,7 @@ func (r *Repository) GetByCategory(ctx context.Context, category string) ([]*cor
 }
 
 // GetAll retrieves all active products
-func (r *Repository) GetAll(ctx context.Context) ([]*core.Product, error) {
+func (r *productRepository) GetAll(ctx context.Context) ([]*core.Product, error) {
 	var productModels []ProductModel
 	if err := r.db.WithContext(ctx).Table("products").
 		Where("is_active = ?", true).
@@ -75,7 +101,7 @@ func (r *Repository) GetAll(ctx context.Context) ([]*core.Product, error) {
 }
 
 // GetMenu retrieves all active products grouped by category
-func (r *Repository) GetMenu(ctx context.Context) (map[string][]*core.Product, error) {
+func (r *productRepository) GetMenu(ctx context.Context) (map[string][]*core.Product, error) {
 	var productModels []ProductModel
 	if err := r.db.WithContext(ctx).Table("products").
 		Where("is_active = ?", true).
@@ -115,7 +141,7 @@ func (r *Repository) UpdateStock(ctx context.Context, id string, quantity int) e
 // OrderRepository implementation
 
 // CreateOrder creates a new order with its items in a transaction
-func (r *Repository) CreateOrder(ctx context.Context, order *core.Order) error {
+func (r *orderRepository) CreateOrder(ctx context.Context, order *core.Order) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Create order
 		orderModel := OrderModelFromDomain(order)
@@ -136,8 +162,8 @@ func (r *Repository) CreateOrder(ctx context.Context, order *core.Order) error {
 	})
 }
 
-// GetByID retrieves an order by its ID with all items
-func (r *Repository) GetByID(ctx context.Context, id string) (*core.Order, error) {
+// GetByID retrieves an order by its ID with all items (implements OrderRepository)
+func (r *orderRepository) GetByID(ctx context.Context, id string) (*core.Order, error) {
 	var orderModel OrderModel
 	if err := r.db.WithContext(ctx).Table("orders").Where("id = ?", id).First(&orderModel).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -197,7 +223,7 @@ func (r *Repository) GetByUserID(ctx context.Context, userID string) ([]*core.Or
 }
 
 // GetByPhone retrieves all orders for a specific phone number
-func (r *Repository) GetByPhone(ctx context.Context, phone string) ([]*core.Order, error) {
+func (r *orderRepository) GetByPhone(ctx context.Context, phone string) ([]*core.Order, error) {
 	var orderModels []OrderModel
 	if err := r.db.WithContext(ctx).Table("orders").
 		Where("customer_phone = ?", phone).
@@ -230,7 +256,7 @@ func (r *Repository) GetByPhone(ctx context.Context, phone string) ([]*core.Orde
 }
 
 // UpdateStatus updates the status of an order
-func (r *Repository) UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error {
+func (r *orderRepository) UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error {
 	result := r.db.WithContext(ctx).Table("orders").
 		Where("id = ?", id).
 		Updates(map[string]interface{}{

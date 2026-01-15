@@ -8,6 +8,8 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
+// DATABASE_URL is Railway's standard environment variable name
+
 // Config holds all application configuration
 type Config struct {
 	AppPort    string `envconfig:"APP_PORT" default:"8080"`
@@ -64,7 +66,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error processing environment variables: %w", err)
 	}
 
-	// Build DBURL if not provided
+	// Check for Railway's DATABASE_URL if DB_URL is not set
+	if cfg.DBURL == "" {
+		if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+			cfg.DBURL = databaseURL
+		}
+	}
+
+	// Build DBURL if still not provided
 	if cfg.DBURL == "" {
 		cfg.DBURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)

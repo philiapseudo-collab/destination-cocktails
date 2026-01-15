@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -128,7 +127,6 @@ func (b *BotService) handleMenu(ctx context.Context, phone string, session *core
 	}
 
 	// Send category list
-	text := "Select a category to browse:"
 	items := make([]struct {
 		ID          string
 		Title       string
@@ -394,10 +392,10 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 		}
 
 		// Initiate STK Push
-		reference, err := b.Payment.InitiateSTKPush(ctx, phone, total, orderID)
+		_, err = b.Payment.InitiateSTKPush(ctx, phone, total, orderID)
 		if err != nil {
 			// If STK push fails, update order status to FAILED
-			b.OrderRepo.UpdateStatus(ctx, orderID, string(core.OrderStatusFailed))
+			b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
 			return fmt.Errorf("failed to initiate STK push: %w", err)
 		}
 
