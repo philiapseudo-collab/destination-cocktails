@@ -100,10 +100,7 @@ func (c *Client) SendText(ctx context.Context, phone string, message string) err
 }
 
 // SendMenuButtons sends an interactive button message (for quick replies)
-func (c *Client) SendMenuButtons(ctx context.Context, phone string, text string, buttons []struct {
-	ID    string
-	Title string
-}) error {
+func (c *Client) SendMenuButtons(ctx context.Context, phone string, text string, buttons []core.Button) error {
 	payload := InteractiveButtonMessage{
 		MessagingProduct: "whatsapp",
 		To:               phone,
@@ -214,7 +211,7 @@ func (c *Client) SendCategoryList(ctx context.Context, phone string, categories 
 		items[i].Title = cat
 	}
 
-	return c.sendInteractiveList(ctx, phone, "Select a category to browse:", "View Categories", items)
+	return c.sendInteractiveList(ctx, phone, "Select a category to browse:", "View Menu", items)
 }
 
 // SendProductList sends a list of products (implements WhatsAppGateway interface)

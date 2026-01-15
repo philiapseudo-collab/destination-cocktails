@@ -36,12 +36,19 @@ type SessionRepository interface {
 	UpdateCart(ctx context.Context, phone string, cartItems string) error
 }
 
+// Button represents a quick reply button
+type Button struct {
+	ID    string
+	Title string
+}
+
 // WhatsAppGateway defines the interface for WhatsApp messaging
 type WhatsAppGateway interface {
 	SendText(ctx context.Context, phone string, message string) error
 	SendMenu(ctx context.Context, phone string, products []*Product) error
 	SendCategoryList(ctx context.Context, phone string, categories []string) error
 	SendProductList(ctx context.Context, phone string, category string, products []*Product) error
+	SendMenuButtons(ctx context.Context, phone string, text string, buttons []Button) error
 }
 
 // PaymentGateway defines the interface for payment processing
