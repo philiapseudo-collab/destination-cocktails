@@ -49,9 +49,21 @@ func main() {
 
 	// Use DATABASE_URL if available (Railway standard), otherwise use DB_URL
 	dbURL := cfg.DBURL
-	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+	
+	// When running locally with Railway CLI, use DATABASE_PUBLIC_URL (external URL)
+	// Railway's DATABASE_URL uses internal hostname (postgres.railway.internal) 
+	// which only works inside Railway's network
+	if publicURL := os.Getenv("DATABASE_PUBLIC_URL"); publicURL != "" {
+		dbURL = publicURL
+		log.Println("Using DATABASE_PUBLIC_URL (external) for local execution")
+	} else if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		dbURL = databaseURL
 		log.Println("Using DATABASE_URL from environment")
+		// Check if it's an internal URL (won't work locally)
+		if strings.Contains(dbURL, "postgres.railway.internal") {
+			log.Println("WARNING: DATABASE_URL uses internal hostname")
+			log.Println("This may fail when running locally. Use DATABASE_PUBLIC_URL instead.")
+		}
 	} else {
 		log.Println("Using DB_URL from config")
 	}
