@@ -87,6 +87,21 @@ func maskToken(token string) string {
 	return token[:3] + "***" + token[len(token)-3:]
 }
 
+// truncateTitle truncates a title to WhatsApp's max length of 24 characters
+func truncateTitle(title string, maxLen int) string {
+	if maxLen <= 0 {
+		maxLen = 24 // WhatsApp's default max length for row titles
+	}
+	if len(title) <= maxLen {
+		return title
+	}
+	// Truncate and add ellipsis if needed
+	if maxLen > 3 {
+		return title[:maxLen-3] + "..."
+	}
+	return title[:maxLen]
+}
+
 // SendText sends a simple text message
 func (c *Client) SendText(ctx context.Context, phone string, message string) error {
 	payload := TextMessage{
@@ -191,7 +206,9 @@ func (c *Client) SendMenu(ctx context.Context, phone string, products []*core.Pr
 
 	for i, p := range products {
 		items[i].ID = p.ID
-		items[i].Title = fmt.Sprintf("%s - KES %.0f", p.Name, p.Price)
+		// Format title and truncate to 24 chars (WhatsApp limit)
+		fullTitle := fmt.Sprintf("%s - KES %.0f", p.Name, p.Price)
+		items[i].Title = truncateTitle(fullTitle, 24)
 		items[i].Description = p.Description
 	}
 
@@ -208,7 +225,8 @@ func (c *Client) SendCategoryList(ctx context.Context, phone string, categories 
 
 	for i, cat := range categories {
 		items[i].ID = cat
-		items[i].Title = cat
+		// Truncate category name to 24 chars (WhatsApp limit)
+		items[i].Title = truncateTitle(cat, 24)
 	}
 
 	return c.sendInteractiveList(ctx, phone, "Select a category to browse:", "View Menu", items)
@@ -224,7 +242,9 @@ func (c *Client) SendProductList(ctx context.Context, phone string, category str
 
 	for i, p := range products {
 		items[i].ID = p.ID
-		items[i].Title = fmt.Sprintf("%s - KES %.0f", p.Name, p.Price)
+		// Format title and truncate to 24 chars (WhatsApp limit)
+		fullTitle := fmt.Sprintf("%s - KES %.0f", p.Name, p.Price)
+		items[i].Title = truncateTitle(fullTitle, 24)
 		if p.Description != "" {
 			items[i].Description = p.Description
 		}
