@@ -392,12 +392,22 @@ func (b *BotService) handleQuantity(ctx context.Context, phone string, session *
 		total += item.Price * float64(item.Quantity)
 	}
 
-	// Confirm addition
-	confirmMsg := fmt.Sprintf("✅ Added to cart:\n%s x%d = KES %.0f\n\nCart total: KES %.0f\n\n"+
-		"Reply with:\n• *Add More* to continue shopping\n• *Checkout* to complete order",
+	// Confirm addition with interactive buttons
+	confirmMsg := fmt.Sprintf("✅ Added to cart:\n%s x%d = KES %.0f\n\nCart total: KES %.0f",
 		product.Name, quantity, product.Price*float64(quantity), total)
 
-	if err := b.WhatsApp.SendText(ctx, phone, confirmMsg); err != nil {
+	buttons := []core.Button{
+		{
+			ID:    "add_more",
+			Title: "Add More",
+		},
+		{
+			ID:    "checkout",
+			Title: "Checkout",
+		},
+	}
+
+	if err := b.WhatsApp.SendMenuButtons(ctx, phone, confirmMsg, buttons); err != nil {
 		return fmt.Errorf("failed to send confirmation: %w", err)
 	}
 
@@ -410,12 +420,13 @@ func (b *BotService) handleQuantity(ctx context.Context, phone string, session *
 func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, session *core.Session, message string) error {
 	messageLower := strings.ToLower(strings.TrimSpace(message))
 
-	if strings.Contains(messageLower, "add more") || strings.Contains(messageLower, "continue") {
+	// Check for button IDs first, then fallback to text matching for backward compatibility
+	if messageLower == "add_more" || strings.Contains(messageLower, "add more") || strings.Contains(messageLower, "continue") {
 		// Go back to categories
 		return b.handleMenu(ctx, phone, session, "Order Drinks")
 	}
 
-	if strings.Contains(messageLower, "checkout") {
+	if messageLower == "checkout" || strings.Contains(messageLower, "checkout") {
 		// Checkout flow: Create order -> Initiate STK Push
 		if len(session.Cart) == 0 {
 			return b.WhatsApp.SendText(ctx, phone, "Your cart is empty. Please add items first.")
@@ -492,6 +503,17 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
 
-	// Invalid input
-	return b.WhatsApp.SendText(ctx, phone, "Please reply with:\n• *Add More* to continue shopping\n• *Checkout* to complete order")
+	// Invalid input - resend buttons
+	confirmMsg := "Please select an option:"
+	buttons := []core.Button{
+		{
+			ID:    "add_more",
+			Title: "Add More",
+		},
+		{
+			ID:    "checkout",
+			Title: "Checkout",
+		},
+	}
+	return b.WhatsApp.SendMenuButtons(ctx, phone, confirmMsg, buttons)
 }
