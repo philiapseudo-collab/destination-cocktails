@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,16 @@ func NewBotService(repo core.ProductRepository, session core.SessionRepository, 
 		OrderRepo: orderRepo,
 		UserRepo:  userRepo,
 	}
+}
+
+// sortProductsAlphabetically sorts products by name (A-Z, case-insensitive)
+func sortProductsAlphabetically(products []*core.Product) []*core.Product {
+	sorted := make([]*core.Product, len(products))
+	copy(sorted, products)
+	sort.Slice(sorted, func(i, j int) bool {
+		return strings.ToLower(sorted[i].Name) < strings.ToLower(sorted[j].Name)
+	})
+	return sorted
 }
 
 // HandleIncomingMessage processes incoming WhatsApp messages
@@ -223,13 +234,18 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 		return b.WhatsApp.SendText(ctx, phone, "No products available in this category.")
 	}
 
-	// Limit to 10 products (WhatsApp list limit)
-	if len(products) > 10 {
-		products = products[:10]
-	}
+	// Sort products alphabetically by name (A-Z)
+	sortedProducts := sortProductsAlphabetically(products)
 
-	// Send product list using interactive list
-	if err := b.WhatsApp.SendProductList(ctx, phone, selectedCategory, products); err != nil {
+	// Build formatted text message with numbered list
+	productList := fmt.Sprintf("Products in *%s*:\n\n", selectedCategory)
+	for i, product := range sortedProducts {
+		productList += fmt.Sprintf("%d. %s - KES %.0f\n", i+1, product.Name, product.Price)
+	}
+	productList += "\nReply with the product name or number to add to cart."
+
+	// Send product list as text message
+	if err := b.WhatsApp.SendText(ctx, phone, productList); err != nil {
 		return fmt.Errorf("failed to send products: %w", err)
 	}
 
@@ -252,12 +268,15 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 		return b.WhatsApp.SendText(ctx, phone, "No products available. Please select another category.")
 	}
 
+	// Sort products alphabetically (same order as displayed in handleBrowsing)
+	sortedProducts := sortProductsAlphabetically(products)
+
 	// Try to match by UUID first, then number or name
 	var selectedProduct *core.Product
 	messageTrimmed := strings.TrimSpace(message)
 	messageLower := strings.ToLower(messageTrimmed)
 
-	// Try UUID first (from interactive list reply)
+	// Try UUID first (from interactive list reply - backward compatibility)
 	if productID, err := uuid.Parse(messageTrimmed); err == nil {
 		// Valid UUID - fetch product by ID
 		product, err := b.Repo.GetByID(ctx, productID.String())
@@ -269,39 +288,46 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 		}
 	}
 
-	// If not found by UUID, try number or name (legacy support)
+	// If not found by UUID, try number or name
 	if selectedProduct == nil {
-		// Try number first
-		if num, err := strconv.Atoi(messageTrimmed); err == nil && num > 0 && num <= len(products) {
-			selectedProduct = products[num-1]
+		// Try number first (map to sorted products)
+		if num, err := strconv.Atoi(messageTrimmed); err == nil {
+			if num > 0 && num <= len(sortedProducts) {
+				selectedProduct = sortedProducts[num-1]
+			}
 		} else {
-			// Try name match
-			for _, product := range products {
-				if strings.ToLower(product.Name) == messageLower || 
-				   strings.Contains(strings.ToLower(product.Name), messageLower) {
-					selectedProduct = product
+			// Try name match: exact match first, then partial match
+			var exactMatch *core.Product
+			var partialMatches []*core.Product
+			
+			for _, product := range sortedProducts {
+				productNameLower := strings.ToLower(product.Name)
+				// Exact match (case-insensitive)
+				if productNameLower == messageLower {
+					exactMatch = product
 					break
 				}
+				// Partial match (contains)
+				if strings.Contains(productNameLower, messageLower) {
+					partialMatches = append(partialMatches, product)
+				}
+			}
+			
+			// Use exact match if found, otherwise use first partial match
+			if exactMatch != nil {
+				selectedProduct = exactMatch
+			} else if len(partialMatches) > 0 {
+				// If multiple partial matches, use the first one
+				selectedProduct = partialMatches[0]
 			}
 		}
 	}
 
 	if selectedProduct == nil {
-		// Invalid selection - resend the product list
-		errorMsg := "That menu is expired. Here is the latest one."
-		// Send error message first, then the list
+		// Invalid selection - send short error message (don't resend list)
+		errorMsg := "Invalid option. Please reply with the number (e.g., '1') or the name of the drink."
 		if err := b.WhatsApp.SendText(ctx, phone, errorMsg); err != nil {
 			return fmt.Errorf("failed to send error message: %w", err)
-		}
-		
-		// Limit to 10 products (WhatsApp list limit)
-		productsToSend := products
-		if len(productsToSend) > 10 {
-			productsToSend = productsToSend[:10]
-		}
-		
-		if err := b.WhatsApp.SendProductList(ctx, phone, session.CurrentCategory, productsToSend); err != nil {
-			return fmt.Errorf("failed to send products: %w", err)
 		}
 		
 		// Keep state as SELECTING_PRODUCT
