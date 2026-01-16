@@ -392,9 +392,16 @@ func (b *BotService) handleQuantity(ctx context.Context, phone string, session *
 		total += item.Price * float64(item.Quantity)
 	}
 
+	// Build cart summary showing all items with prices before total
+	cartSummary := "✅ Added to cart!\n\n📦 Your cart:\n"
+	for _, item := range session.Cart {
+		itemTotal := item.Price * float64(item.Quantity)
+		cartSummary += fmt.Sprintf("%s x%d = KES %.0f\n", item.Name, item.Quantity, itemTotal)
+	}
+	cartSummary += fmt.Sprintf("\n💰 Cart total: KES %.0f", total)
+
 	// Confirm addition with interactive buttons
-	confirmMsg := fmt.Sprintf("✅ Added to cart:\n%s x%d = KES %.0f\n\nCart total: KES %.0f",
-		product.Name, quantity, product.Price*float64(quantity), total)
+	confirmMsg := cartSummary
 
 	buttons := []core.Button{
 		{
