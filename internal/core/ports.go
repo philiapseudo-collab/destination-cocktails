@@ -9,6 +9,7 @@ type ProductRepository interface {
 	GetAll(ctx context.Context) ([]*Product, error)
 	GetMenu(ctx context.Context) (map[string][]*Product, error)
 	UpdateStock(ctx context.Context, id string, quantity int) error
+	SearchProducts(ctx context.Context, query string) ([]*Product, error)
 }
 
 // OrderRepository defines the interface for order data access

@@ -151,6 +151,24 @@ func (r *productRepository) UpdateStock(ctx context.Context, id string, quantity
 	return nil
 }
 
+// SearchProducts searches for products by name (case-insensitive partial match)
+func (r *productRepository) SearchProducts(ctx context.Context, query string) ([]*core.Product, error) {
+	var productModels []ProductModel
+	searchPattern := "%" + query + "%"
+	if err := r.db.WithContext(ctx).Table("products").
+		Where("LOWER(name) LIKE LOWER(?) AND is_active = ?", searchPattern, true).
+		Order("name").
+		Find(&productModels).Error; err != nil {
+		return nil, fmt.Errorf("failed to search products: %w", err)
+	}
+
+	products := make([]*core.Product, len(productModels))
+	for i, pm := range productModels {
+		products[i] = pm.ToDomain()
+	}
+	return products, nil
+}
+
 // OrderRepository implementation
 
 // CreateOrder creates a new order with its items in a transaction

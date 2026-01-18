@@ -107,22 +107,78 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 	}
 }
 
-// handleStart handles the START state - sends welcome message
+// handleStart handles the START state - sends welcome message or processes search
 func (b *BotService) handleStart(ctx context.Context, phone string, session *core.Session, message string) error {
-	welcomeText := "Welcome to Destination Cocktails! 🍹"
-	buttons := []core.Button{
-		{
-			ID:    "order_drinks",
-			Title: "Order Drinks",
-		},
+	messageLower := strings.ToLower(strings.TrimSpace(message))
+	
+	// If message is "order_drinks" button or contains "order", send welcome message and proceed to menu
+	if messageLower == "order_drinks" || messageLower == "order drinks" || strings.Contains(messageLower, "order") {
+		welcomeText := "Welcome to Destination Cocktails! 🍹\n\nTap *Order Drinks* to browse our menu, or simply *type a drink name* (e.g., 'Jameson') to search.\n\n_💡 Tip: Please search for one item at a time._"
+		buttons := []core.Button{
+			{
+				ID:    "order_drinks",
+				Title: "Order Drinks",
+			},
+		}
+
+		if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
+			return fmt.Errorf("failed to send welcome message: %w", err)
+		}
+
+		// Set state to MENU
+		session.State = "MENU"
+		return b.Session.Set(ctx, phone, session, 7200)
 	}
 
-	if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
-		return fmt.Errorf("failed to send welcome message: %w", err)
+	// Otherwise, treat the message as a search query
+	searchQuery := strings.TrimSpace(message)
+	products, err := b.Repo.SearchProducts(ctx, searchQuery)
+	if err != nil {
+		return fmt.Errorf("failed to search products: %w", err)
 	}
 
-	// Set state to MENU
-	session.State = "MENU"
+	// If no results found, send error message and welcome again
+	if len(products) == 0 {
+		noResultsMsg := fmt.Sprintf("No products found for '%s'. Please try a different search term.\n\n", searchQuery)
+		welcomeText := "Welcome to Destination Cocktails! 🍹\n\nTap *Order Drinks* to browse our menu, or simply *type a drink name* (e.g., 'Jameson') to search.\n\n_💡 Tip: Please search for one item at a time._"
+		buttons := []core.Button{
+			{
+				ID:    "order_drinks",
+				Title: "Order Drinks",
+			},
+		}
+		
+		if err := b.WhatsApp.SendText(ctx, phone, noResultsMsg); err != nil {
+			return fmt.Errorf("failed to send no results message: %w", err)
+		}
+		
+		if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
+			return fmt.Errorf("failed to send welcome message: %w", err)
+		}
+		
+		// Stay in START state
+		return b.Session.Set(ctx, phone, session, 7200)
+	}
+
+	// Sort products alphabetically
+	sortedProducts := sortProductsAlphabetically(products)
+
+	// Build formatted text message with numbered list
+	productList := fmt.Sprintf("Search results for '*%s*':\n\n", searchQuery)
+	for i, product := range sortedProducts {
+		productList += fmt.Sprintf("%d. %s - KES %.0f\n", i+1, product.Name, product.Price)
+	}
+	productList += "\nReply with the product name or number to add to cart."
+
+	// Send product list as text message
+	if err := b.WhatsApp.SendText(ctx, phone, productList); err != nil {
+		return fmt.Errorf("failed to send search results: %w", err)
+	}
+
+	// Set a pseudo-category for search results so SELECTING_PRODUCT state can work
+	// We'll use a special category name that includes all search results
+	session.CurrentCategory = "_SEARCH_" + searchQuery
+	session.State = "SELECTING_PRODUCT"
 	return b.Session.Set(ctx, phone, session, 7200)
 }
 
@@ -257,19 +313,38 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 
 // handleSelectingProduct handles the SELECTING_PRODUCT state - user selects a product
 func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, session *core.Session, message string) error {
-	// Get products from current category
-	menu, err := b.Repo.GetMenu(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get menu: %w", err)
-	}
+	var sortedProducts []*core.Product
+	var err error
 
-	products := menu[session.CurrentCategory]
-	if len(products) == 0 {
-		return b.WhatsApp.SendText(ctx, phone, "No products available. Please select another category.")
-	}
+	// Check if we're in search mode (category starts with "_SEARCH_")
+	isSearchMode := strings.HasPrefix(session.CurrentCategory, "_SEARCH_")
 
-	// Sort products alphabetically (same order as displayed in handleBrowsing)
-	sortedProducts := sortProductsAlphabetically(products)
+	if isSearchMode {
+		// Extract search query from category
+		searchQuery := strings.TrimPrefix(session.CurrentCategory, "_SEARCH_")
+		products, err := b.Repo.SearchProducts(ctx, searchQuery)
+		if err != nil {
+			return fmt.Errorf("failed to search products: %w", err)
+		}
+		if len(products) == 0 {
+			return b.WhatsApp.SendText(ctx, phone, "No products available. Please search again.")
+		}
+		sortedProducts = sortProductsAlphabetically(products)
+	} else {
+		// Get products from current category (normal menu flow)
+		menu, err := b.Repo.GetMenu(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get menu: %w", err)
+		}
+
+		products := menu[session.CurrentCategory]
+		if len(products) == 0 {
+			return b.WhatsApp.SendText(ctx, phone, "No products available. Please select another category.")
+		}
+
+		// Sort products alphabetically (same order as displayed in handleBrowsing)
+		sortedProducts = sortProductsAlphabetically(products)
+	}
 
 	// Try to match by UUID first, then number or name
 	var selectedProduct *core.Product
@@ -281,9 +356,20 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 		// Valid UUID - fetch product by ID
 		product, err := b.Repo.GetByID(ctx, productID.String())
 		if err == nil && product != nil {
-			// Verify product is in current category
-			if product.Category == session.CurrentCategory {
-				selectedProduct = product
+			// Verify product is in current category (skip check for search mode)
+			if isSearchMode {
+				// For search mode, verify product is in the sorted list
+				for _, p := range sortedProducts {
+					if p.ID == product.ID {
+						selectedProduct = product
+						break
+					}
+				}
+			} else {
+				// For normal category mode, verify category matches
+				if product.Category == session.CurrentCategory {
+					selectedProduct = product
+				}
 			}
 		}
 	}
