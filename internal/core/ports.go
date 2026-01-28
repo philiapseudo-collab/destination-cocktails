@@ -9,6 +9,7 @@ type ProductRepository interface {
 	GetAll(ctx context.Context) ([]*Product, error)
 	GetMenu(ctx context.Context) (map[string][]*Product, error)
 	UpdateStock(ctx context.Context, id string, quantity int) error
+	UpdatePrice(ctx context.Context, id string, price float64) error
 	SearchProducts(ctx context.Context, query string) ([]*Product, error)
 }
 
@@ -19,6 +20,7 @@ type OrderRepository interface {
 	GetByUserID(ctx context.Context, userID string) ([]*Order, error)
 	GetByPhone(ctx context.Context, phone string) ([]*Order, error)
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
+	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
 }
 
 // UserRepository defines the interface for user data access
@@ -66,4 +68,26 @@ type PaymentWebhook struct {
 	Reference string
 	Amount    float64
 	Success   bool
+}
+
+// AdminUserRepository defines the interface for admin user data access
+type AdminUserRepository interface {
+	GetByPhone(ctx context.Context, phone string) (*AdminUser, error)
+	Create(ctx context.Context, user *AdminUser) error
+	IsActive(ctx context.Context, phone string) (bool, error)
+}
+
+// OTPRepository defines the interface for OTP code management
+type OTPRepository interface {
+	Create(ctx context.Context, otp *OTPCode) error
+	GetLatestByPhone(ctx context.Context, phone string) (*OTPCode, error)
+	MarkAsVerified(ctx context.Context, id string) error
+	CleanupExpired(ctx context.Context) error
+}
+
+// AnalyticsRepository defines the interface for analytics data access
+type AnalyticsRepository interface {
+	GetOverview(ctx context.Context) (*Analytics, error)
+	GetRevenueTrend(ctx context.Context, days int) ([]*RevenueTrend, error)
+	GetTopProducts(ctx context.Context, limit int) ([]*TopProduct, error)
 }

@@ -12,8 +12,8 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	AppPort    string `envconfig:"APP_PORT" default:"8080"`
-	AppEnv     string `envconfig:"APP_ENV" default:"development"`
+	AppPort string `envconfig:"APP_PORT" default:"8080"`
+	AppEnv  string `envconfig:"APP_ENV" default:"development"`
 
 	// Database
 	DBHost     string `envconfig:"DB_HOST" default:"localhost"`
@@ -28,17 +28,23 @@ type Config struct {
 	RedisPassword string `envconfig:"REDIS_PASSWORD" default:""`
 
 	// WhatsApp
-	WhatsAppToken        string `envconfig:"WHATSAPP_TOKEN"`
+	WhatsAppToken         string `envconfig:"WHATSAPP_TOKEN"`
 	WhatsAppPhoneNumberID string `envconfig:"WHATSAPP_PHONE_NUMBER_ID"`
-	WhatsAppVerifyToken  string `envconfig:"WHATSAPP_VERIFY_TOKEN"`
+	WhatsAppVerifyToken   string `envconfig:"WHATSAPP_VERIFY_TOKEN"`
+
+	// Bar Staff
+	BarStaffPhone string `envconfig:"BAR_STAFF_PHONE"` // Phone number for bar staff notifications
+
+	// Dashboard
+	JWTSecret string `envconfig:"JWT_SECRET" default:"change-this-secret-in-production"`
 
 	// Kopo Kopo
-	KopoKopoAPIKey     string `envconfig:"KOPOKOPO_API_KEY"`
-	KopoKopoSecret     string `envconfig:"KOPOKOPO_SECRET"`
-	KopoKopoBaseURL    string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
-	KopoKopoTillNumber string `envconfig:"KOPOKOPO_TILL_NUMBER"`
+	KopoKopoAPIKey      string `envconfig:"KOPOKOPO_API_KEY"`
+	KopoKopoSecret      string `envconfig:"KOPOKOPO_SECRET"`
+	KopoKopoBaseURL     string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
+	KopoKopoTillNumber  string `envconfig:"KOPOKOPO_TILL_NUMBER"`
 	KopoKopoAccessToken string `envconfig:"KOPOKOPO_ACCESS_TOKEN"` // Long-lived token or obtained via OAuth
-	WebhookBaseURL      string `envconfig:"WEBHOOK_BASE_URL"`       // Your Railway/public URL for callbacks
+	WebhookBaseURL      string `envconfig:"WEBHOOK_BASE_URL"`      // Your Railway/public URL for callbacks
 
 	// Pesapal
 	PesapalClientID     string `envconfig:"PESAPAL_CLIENT_ID"`

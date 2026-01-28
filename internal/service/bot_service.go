@@ -14,12 +14,12 @@ import (
 
 // BotService handles the bot state machine and message processing
 type BotService struct {
-	Repo          core.ProductRepository
-	Session       core.SessionRepository
-	WhatsApp      core.WhatsAppGateway
-	Payment       core.PaymentGateway
-	OrderRepo     core.OrderRepository
-	UserRepo      core.UserRepository
+	Repo      core.ProductRepository
+	Session   core.SessionRepository
+	WhatsApp  core.WhatsAppGateway
+	Payment   core.PaymentGateway
+	OrderRepo core.OrderRepository
+	UserRepo  core.UserRepository
 }
 
 // NewBotService creates a new bot service
@@ -51,7 +51,7 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 	// Global Reset Check: Check for reset keywords before processing state
 	normalizedMessage := strings.ToLower(strings.TrimSpace(message))
 	resetKeywords := []string{"hi", "hello", "start", "restart", "reset", "menu"}
-	
+
 	for _, keyword := range resetKeywords {
 		if normalizedMessage == keyword {
 			// Create a completely fresh session
@@ -61,12 +61,12 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 				CurrentCategory:  "",
 				CurrentProductID: "",
 			}
-			
+
 			// Save the fresh session to Redis
 			if err := b.Session.Set(ctx, phone, newSession, 7200); err != nil {
 				return fmt.Errorf("failed to reset session: %w", err)
 			}
-			
+
 			// Call handleStart to send welcome message and return early
 			return b.handleStart(ctx, phone, newSession, message)
 		}
@@ -110,7 +110,7 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 // handleStart handles the START state - sends welcome message or processes search
 func (b *BotService) handleStart(ctx context.Context, phone string, session *core.Session, message string) error {
 	messageLower := strings.ToLower(strings.TrimSpace(message))
-	
+
 	// If message is "order_drinks" button or contains "order", send welcome message and proceed to menu
 	if messageLower == "order_drinks" || messageLower == "order drinks" || strings.Contains(messageLower, "order") {
 		welcomeText := "Welcome to Destination Cocktails! 🍹\n\nTap *Order Drinks* to browse our menu, or simply *type a drink name* (e.g., 'Jameson') to search.\n\n_💡 Tip: Please search for one item at a time._"
@@ -147,15 +147,15 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 				Title: "Order Drinks",
 			},
 		}
-		
+
 		if err := b.WhatsApp.SendText(ctx, phone, noResultsMsg); err != nil {
 			return fmt.Errorf("failed to send no results message: %w", err)
 		}
-		
+
 		if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
 			return fmt.Errorf("failed to send welcome message: %w", err)
 		}
-		
+
 		// Stay in START state
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
@@ -185,7 +185,7 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 // handleMenu handles the MENU state - shows categories
 func (b *BotService) handleMenu(ctx context.Context, phone string, session *core.Session, message string) error {
 	messageLower := strings.ToLower(strings.TrimSpace(message))
-	
+
 	// Accept button ID or text containing "order"
 	if messageLower != "order_drinks" && messageLower != "order drinks" && !strings.Contains(messageLower, "order") {
 		// Invalid input - resend the category list
@@ -193,27 +193,27 @@ func (b *BotService) handleMenu(ctx context.Context, phone string, session *core
 		if err != nil {
 			return fmt.Errorf("failed to get menu: %w", err)
 		}
-		
+
 		categories := make([]string, 0, len(menu))
 		for category := range menu {
 			categories = append(categories, category)
 		}
-		
+
 		// Limit to 10 categories (WhatsApp list limit)
 		if len(categories) > 10 {
 			categories = categories[:10]
 		}
-		
+
 		errorMsg := "That menu is expired. Here is the latest one."
 		// Send error message first, then the list
 		if err := b.WhatsApp.SendText(ctx, phone, errorMsg); err != nil {
 			return fmt.Errorf("failed to send error message: %w", err)
 		}
-		
+
 		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
 			return fmt.Errorf("failed to send categories: %w", err)
 		}
-		
+
 		// Set state to BROWSING
 		session.State = "BROWSING"
 		return b.Session.Set(ctx, phone, session, 7200)
@@ -256,7 +256,7 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 
 	// Trust the category ID from list_reply (exact match)
 	selectedCategory := strings.TrimSpace(message)
-	
+
 	// Check if category exists in menu
 	products, categoryExists := menu[selectedCategory]
 	if !categoryExists {
@@ -265,22 +265,22 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 		for category := range menu {
 			categories = append(categories, category)
 		}
-		
+
 		// Limit to 10 categories (WhatsApp list limit)
 		if len(categories) > 10 {
 			categories = categories[:10]
 		}
-		
+
 		errorMsg := "That menu is expired. Here is the latest one."
 		// Send error message first, then the list
 		if err := b.WhatsApp.SendText(ctx, phone, errorMsg); err != nil {
 			return fmt.Errorf("failed to send error message: %w", err)
 		}
-		
+
 		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
 			return fmt.Errorf("failed to send categories: %w", err)
 		}
-		
+
 		// Keep state as BROWSING
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
@@ -314,7 +314,6 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 // handleSelectingProduct handles the SELECTING_PRODUCT state - user selects a product
 func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, session *core.Session, message string) error {
 	var sortedProducts []*core.Product
-	var err error
 
 	// Check if we're in search mode (category starts with "_SEARCH_")
 	isSearchMode := strings.HasPrefix(session.CurrentCategory, "_SEARCH_")
@@ -385,7 +384,7 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 			// Try name match: exact match first, then partial match
 			var exactMatch *core.Product
 			var partialMatches []*core.Product
-			
+
 			for _, product := range sortedProducts {
 				productNameLower := strings.ToLower(product.Name)
 				// Exact match (case-insensitive)
@@ -398,7 +397,7 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 					partialMatches = append(partialMatches, product)
 				}
 			}
-			
+
 			// Use exact match if found, otherwise use first partial match
 			if exactMatch != nil {
 				selectedProduct = exactMatch
@@ -415,7 +414,7 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 		if err := b.WhatsApp.SendText(ctx, phone, errorMsg); err != nil {
 			return fmt.Errorf("failed to send error message: %w", err)
 		}
-		
+
 		// Keep state as SELECTING_PRODUCT
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
@@ -429,9 +428,9 @@ func (b *BotService) handleSelectingProduct(ctx context.Context, phone string, s
 	session.CurrentProductID = selectedProduct.ID
 
 	// Ask for quantity
-	quantityMsg := fmt.Sprintf("You selected: *%s*\nPrice: KES %.0f\n\nHow many would you like? (Enter a number)", 
+	quantityMsg := fmt.Sprintf("You selected: *%s*\nPrice: KES %.0f\n\nHow many would you like? (Enter a number)",
 		selectedProduct.Name, selectedProduct.Price)
-	
+
 	if err := b.WhatsApp.SendText(ctx, phone, quantityMsg); err != nil {
 		return fmt.Errorf("failed to send quantity prompt: %w", err)
 	}
@@ -458,7 +457,7 @@ func (b *BotService) handleQuantity(ctx context.Context, phone string, session *
 
 	// Check stock
 	if product.StockQuantity < quantity {
-		return b.WhatsApp.SendText(ctx, phone, 
+		return b.WhatsApp.SendText(ctx, phone,
 			fmt.Sprintf("Sorry, only %d available in stock. Please enter a smaller quantity.", product.StockQuantity))
 	}
 
@@ -540,6 +539,9 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 		// Generate order ID
 		orderID := uuid.New().String()
 
+		// Generate 4-digit pickup code
+		pickupCode := generatePickupCode()
+
 		// Create order items from cart
 		orderItems := make([]core.OrderItem, len(session.Cart))
 		for i, cartItem := range session.Cart {
@@ -561,6 +563,7 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 			TotalAmount:   total,
 			Status:        core.OrderStatusPending,
 			PaymentMethod: string(core.PaymentMethodMpesa),
+			PickupCode:    pickupCode,
 			Items:         orderItems,
 			CreatedAt:     time.Now(),
 		}
@@ -609,4 +612,9 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 		},
 	}
 	return b.WhatsApp.SendMenuButtons(ctx, phone, confirmMsg, buttons)
+}
+
+// generatePickupCode generates a random 4-digit pickup code
+func generatePickupCode() string {
+	return fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
 }

@@ -13,17 +13,19 @@ import (
 	"github.com/dumu-tech/destination-cocktails/internal/adapters/whatsapp"
 	"github.com/dumu-tech/destination-cocktails/internal/config"
 	"github.com/dumu-tech/destination-cocktails/internal/core"
+	"github.com/dumu-tech/destination-cocktails/internal/events"
 	"github.com/gofiber/fiber/v2"
 )
 
 // Handler handles HTTP requests for WhatsApp webhooks and payment webhooks
 type Handler struct {
-	verifyToken   string
-	appSecret     string
-	botService    BotServiceHandler
-	paymentGateway PaymentGatewayHandler
-	orderRepo      OrderRepositoryHandler
+	verifyToken     string
+	appSecret       string
+	botService      BotServiceHandler
+	paymentGateway  PaymentGatewayHandler
+	orderRepo       OrderRepositoryHandler
 	whatsappGateway WhatsAppGatewayHandler
+	eventBus        *events.EventBus
 }
 
 // PaymentGatewayHandler defines the interface for payment gateway
@@ -43,7 +45,6 @@ type WhatsAppGatewayHandler interface {
 	SendText(ctx context.Context, phone string, message string) error
 }
 
-
 // BotServiceHandler defines the interface for bot service
 type BotServiceHandler interface {
 	HandleIncomingMessage(phone string, message string, messageType string) error
@@ -53,23 +54,29 @@ type BotServiceHandler interface {
 func NewHandler(botService BotServiceHandler, paymentGateway PaymentGatewayHandler, orderRepo OrderRepositoryHandler, whatsappGateway WhatsAppGatewayHandler) *Handler {
 	cfg := config.Get()
 	verifyToken := strings.TrimSpace(cfg.WhatsAppVerifyToken)
-	
+
 	if verifyToken == "" {
 		log.Printf("WARNING: WHATSAPP_VERIFY_TOKEN is not set or empty!")
 	}
-	
-	fmt.Printf("Handler initialized - Verify token length: %d, starts with: %s\n", 
-		len(verifyToken), 
+
+	fmt.Printf("Handler initialized - Verify token length: %d, starts with: %s\n",
+		len(verifyToken),
 		maskToken(verifyToken))
-	
+
 	return &Handler{
-		verifyToken:    verifyToken,
-		appSecret:      "", // TODO: Add APP_SECRET to config if available
-		botService:     botService,
-		paymentGateway: paymentGateway,
-		orderRepo:      orderRepo,
+		verifyToken:     verifyToken,
+		appSecret:       "", // TODO: Add APP_SECRET to config if available
+		botService:      botService,
+		paymentGateway:  paymentGateway,
+		orderRepo:       orderRepo,
 		whatsappGateway: whatsappGateway,
+		eventBus:        nil, // Will be set via SetEventBus
 	}
+}
+
+// SetEventBus sets the event bus for real-time event emission
+func (h *Handler) SetEventBus(eventBus *events.EventBus) {
+	h.eventBus = eventBus
 }
 
 // VerifyWebhook handles GET requests for webhook verification
@@ -183,6 +190,13 @@ func (h *Handler) ReceiveMessage(c *fiber.Ctx) error {
 					messageToProcess = messageText
 				}
 
+				// Check if this is a "Mark Done" button from bar staff
+				if strings.HasPrefix(messageToProcess, "complete_") {
+					orderID := strings.TrimPrefix(messageToProcess, "complete_")
+					go h.handleOrderCompletion(c.Context(), phone, orderID)
+					continue
+				}
+
 				// Handle message asynchronously (fire and forget for webhook response)
 				go func(phoneNum, msgText, msgType string) {
 					if err := h.botService.HandleIncomingMessage(phoneNum, msgText, msgType); err != nil {
@@ -257,14 +271,22 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			// Get order to find customer phone
 			order, err := h.orderRepo.GetOrderByID(ctx, result.OrderID)
 			if err == nil && order != nil {
-				// Send WhatsApp notification to user
-				message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹", 
+				// Send WhatsApp notification to customer
+				message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹",
 					result.OrderID[:8], order.TotalAmount)
 				go func(phone, msg string) {
 					if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
 						fmt.Printf("Error sending payment confirmation: %v\n", err)
 					}
 				}(order.CustomerPhone, message)
+
+				// Send notification to bar staff
+				go h.notifyBarStaff(ctx, order)
+
+				// Emit new_order event for dashboard SSE
+				if h.eventBus != nil {
+					h.eventBus.PublishNewOrder(order)
+				}
 			}
 		}
 	}
@@ -273,4 +295,77 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 	return c.Status(http.StatusOK).JSON(fiber.Map{
 		"status": "ok",
 	})
+}
+
+// notifyBarStaff sends a WhatsApp notification to bar staff with order details
+func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
+	cfg := config.Get()
+	barStaffPhone := cfg.BarStaffPhone
+
+	if barStaffPhone == "" {
+		log.Println("BAR_STAFF_PHONE not configured, skipping bar staff notification")
+		return
+	}
+
+	// Build message with pickup code and items
+	message := fmt.Sprintf("🔔 *New Order #%s*\n\n", order.PickupCode)
+	message += "📦 *Items:*\n"
+
+	for _, item := range order.Items {
+		// Note: Item names should be populated by the repository
+		message += fmt.Sprintf("• %d x Item\n", item.Quantity)
+	}
+
+	message += fmt.Sprintf("\n💰 Total: KES %.0f\n", order.TotalAmount)
+	message += fmt.Sprintf("📱 Customer: %s\n", order.CustomerPhone)
+
+	// Send with "Mark Done" button
+	buttons := []core.Button{
+		{
+			ID:    fmt.Sprintf("complete_%s", order.ID),
+			Title: "Mark Done",
+		},
+	}
+
+	// Use WhatsAppGateway interface which has SendMenuButtons
+	if gateway, ok := h.whatsappGateway.(core.WhatsAppGateway); ok {
+		if err := gateway.SendMenuButtons(ctx, barStaffPhone, message, buttons); err != nil {
+			log.Printf("Error sending bar staff notification: %v", err)
+		}
+	}
+}
+
+// handleOrderCompletion handles the "Mark Done" button callback from bar staff
+func (h *Handler) handleOrderCompletion(ctx context.Context, barStaffPhone string, orderID string) {
+	// Get order to check current status
+	order, err := h.orderRepo.GetOrderByID(ctx, orderID)
+	if err != nil {
+		log.Printf("Error fetching order for completion: %v", err)
+		h.whatsappGateway.SendText(ctx, barStaffPhone, "❌ Order not found")
+		return
+	}
+
+	// Prevent double-clicking
+	if order.Status == core.OrderStatusCompleted {
+		h.whatsappGateway.SendText(ctx, barStaffPhone, "ℹ️ Order already marked as completed")
+		return
+	}
+
+	// Update status to COMPLETED
+	if err := h.orderRepo.UpdateStatus(ctx, orderID, core.OrderStatusCompleted); err != nil {
+		log.Printf("Error updating order status to COMPLETED: %v", err)
+		h.whatsappGateway.SendText(ctx, barStaffPhone, "❌ Failed to update order status")
+		return
+	}
+
+	// Send confirmation to bar staff
+	confirmMsg := fmt.Sprintf("✅ Order #%s marked as served!", order.PickupCode)
+	h.whatsappGateway.SendText(ctx, barStaffPhone, confirmMsg)
+
+	// Emit order_completed event for dashboard SSE
+	if h.eventBus != nil {
+		h.eventBus.PublishOrderCompleted(orderID)
+	}
+
+	log.Printf("Order %s (pickup: %s) marked as COMPLETED by bar staff", orderID, order.PickupCode)
 }

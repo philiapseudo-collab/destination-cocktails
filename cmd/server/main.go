@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/dumu-tech/destination-cocktails/internal/adapters/http"
@@ -12,13 +13,16 @@ import (
 	redisRepo "github.com/dumu-tech/destination-cocktails/internal/adapters/redis"
 	"github.com/dumu-tech/destination-cocktails/internal/adapters/whatsapp"
 	"github.com/dumu-tech/destination-cocktails/internal/config"
+	"github.com/dumu-tech/destination-cocktails/internal/core"
+	"github.com/dumu-tech/destination-cocktails/internal/events"
+	"github.com/dumu-tech/destination-cocktails/internal/middleware"
 	"github.com/dumu-tech/destination-cocktails/internal/service"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-	"github.com/dumu-tech/destination-cocktails/internal/core"
 )
 
 // maskURL masks sensitive parts of a URL for logging
@@ -61,7 +65,7 @@ func main() {
 	}
 
 	log.Println("Initializing connections...")
-	
+
 	// Create context for initialization
 	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer initCancel()
@@ -80,7 +84,7 @@ func main() {
 		}
 
 		rdb = redis.NewClient(redisOpts)
-		
+
 		// Ping Redis to verify connection (with timeout)
 		pingCtx, pingCancel := context.WithTimeout(initCtx, 5*time.Second)
 		if err := rdb.Ping(pingCtx).Err(); err != nil {
@@ -120,7 +124,7 @@ func main() {
 	}
 
 	// Initialize WhatsApp client
-	log.Printf("Initializing WhatsApp client (Phone Number ID length: %d, Token length: %d)", 
+	log.Printf("Initializing WhatsApp client (Phone Number ID length: %d, Token length: %d)",
 		len(cfg.WhatsAppPhoneNumberID), len(cfg.WhatsAppToken))
 	if cfg.WhatsAppPhoneNumberID == "" {
 		log.Fatalf("CRITICAL: WHATSAPP_PHONE_NUMBER_ID environment variable is not set")
@@ -142,7 +146,7 @@ func main() {
 	if redisRepository == nil {
 		log.Fatalf("CRITICAL: Redis is required for bot service. Please configure REDIS_URL environment variable.")
 	}
-	
+
 	botService := service.NewBotService(
 		postgresRepo.ProductRepository(),
 		redisRepository,
@@ -165,6 +169,29 @@ func main() {
 		whatsappClient,
 	)
 
+	// Initialize Event Bus for SSE
+	log.Println("Initializing Event Bus...")
+	eventBus := events.NewEventBus()
+
+	// Wire EventBus to HTTP Handler for real-time order updates
+	httpHandler.SetEventBus(eventBus)
+
+	// Initialize Dashboard Service
+	log.Println("Initializing Dashboard Service...")
+	dashboardService := service.NewDashboardService(
+		postgresRepo.AdminUserRepository(),
+		postgresRepo.OTPRepository(),
+		postgresRepo.ProductRepository(),
+		postgresRepo.OrderRepository(),
+		postgresRepo.AnalyticsRepository(),
+		whatsappClient,
+		eventBus,
+		cfg.JWTSecret,
+	)
+
+	// Initialize Dashboard Handler
+	dashboardHandler := http.NewDashboardHandler(dashboardService)
+
 	// Initialize Fiber app early so health checks work
 	log.Println("Initializing HTTP server...")
 	app := fiber.New(fiber.Config{
@@ -178,6 +205,26 @@ func main() {
 	app.Use(recover.New())
 	app.Use(logger.New())
 
+	// CORS middleware for dashboard
+	app.Use(cors.New(cors.Config{
+		AllowOriginsFunc: func(origin string) bool {
+			// Allow localhost for development
+			if origin == "http://localhost:3000" {
+				return true
+			}
+			// Allow any Railway subdomain (e.g. dashboard-production.up.railway.app)
+			if strings.HasSuffix(origin, ".railway.app") {
+				return true
+			}
+			return false
+		},
+		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+		AllowCredentials: true,
+		ExposeHeaders:    "Content-Length",
+		MaxAge:           3600,
+	}))
+
 	// Health check route - responds immediately
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -185,7 +232,7 @@ func main() {
 			"project": "destination-cocktails",
 		})
 	})
-	
+
 	// Early startup route for debugging
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -203,10 +250,43 @@ func main() {
 	// Payment webhook route
 	app.Post("/api/webhooks/payment", httpHandler.HandlePaymentWebhook)
 
+	// Dashboard routes (authentication - no auth required)
+	app.Post("/api/admin/auth/request-otp", dashboardHandler.RequestOTP)
+	app.Post("/api/admin/auth/verify-otp", dashboardHandler.VerifyOTP)
+
+	// Dashboard routes (protected with JWT middleware)
+	authMiddleware := middleware.AuthMiddleware(dashboardService)
+	app.Post("/api/admin/auth/logout", authMiddleware, dashboardHandler.Logout)
+	app.Get("/api/admin/auth/me", authMiddleware, dashboardHandler.GetMe)
+
+	// Products
+	app.Get("/api/admin/products", authMiddleware, dashboardHandler.GetProducts)
+	app.Patch("/api/admin/products/:id/stock", authMiddleware, dashboardHandler.UpdateStock)
+	app.Patch("/api/admin/products/:id/price", authMiddleware, dashboardHandler.UpdatePrice)
+
+	// Orders
+	app.Get("/api/admin/orders", authMiddleware, dashboardHandler.GetOrders)
+
+	// Analytics
+	app.Get("/api/admin/analytics/overview", authMiddleware, dashboardHandler.GetAnalyticsOverview)
+	app.Get("/api/admin/analytics/revenue", authMiddleware, dashboardHandler.GetRevenueTrend)
+	app.Get("/api/admin/analytics/top-products", authMiddleware, dashboardHandler.GetTopProducts)
+
+	// SSE (Server-Sent Events)
+	app.Get("/api/admin/events", authMiddleware, dashboardHandler.SSEEvents)
+
 	log.Println("✓ Routes registered:")
 	log.Printf("  GET  /webhook - WhatsApp webhook verification (verify token configured: %v)", cfg.WhatsAppVerifyToken != "")
 	log.Println("  POST /webhook - WhatsApp message webhook")
 	log.Println("  POST /api/webhooks/payment - Payment webhook")
+	log.Println("  POST /api/admin/auth/request-otp - Request OTP")
+	log.Println("  POST /api/admin/auth/verify-otp - Verify OTP")
+	log.Println("  GET  /api/admin/products - Get products (protected)")
+	log.Println("  PATCH /api/admin/products/:id/stock - Update stock (protected)")
+	log.Println("  PATCH /api/admin/products/:id/price - Update price (protected)")
+	log.Println("  GET  /api/admin/orders - Get orders (protected)")
+	log.Println("  GET  /api/admin/analytics/* - Analytics endpoints (protected)")
+	log.Println("  GET  /api/admin/events - SSE stream (protected)")
 	log.Printf("✓ Server ready on port %s", cfg.AppPort)
 
 	// Start server
