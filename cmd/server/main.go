@@ -53,7 +53,7 @@ func (a *orderRepoAdapter) UpdateStatus(ctx context.Context, id string, status c
 	return a.repo.UpdateStatus(ctx, id, status)
 }
 
-func (a *orderRepoAdapter) GetOrderByID(ctx context.Context, id string) (*core.Order, error) {
+func (a *orderRepoAdapter) GetByID(ctx context.Context, id string) (*core.Order, error) {
 	return a.repo.GetByID(ctx, id)
 }
 

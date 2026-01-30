@@ -572,10 +572,10 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 			return fmt.Errorf("failed to create order: %w", err)
 		}
 
-		// Initiate STK Push
-		_, err = b.Payment.InitiateSTKPush(ctx, phone, total, orderID)
+		// Initiate STK Push (queued for async processing)
+		err = b.Payment.InitiateSTKPush(ctx, orderID, phone, total)
 		if err != nil {
-			// If STK push fails, update order status to FAILED
+			// If queueing fails (system busy), update order status to FAILED
 			b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
 			return fmt.Errorf("failed to initiate STK push: %w", err)
 		}

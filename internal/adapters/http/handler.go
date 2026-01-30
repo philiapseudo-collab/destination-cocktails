@@ -37,7 +37,7 @@ type PaymentGatewayHandler interface {
 // OrderRepositoryHandler defines the interface for order repository
 type OrderRepositoryHandler interface {
 	UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error
-	GetOrderByID(ctx context.Context, id string) (*core.Order, error)
+	GetByID(ctx context.Context, id string) (*core.Order, error)
 }
 
 // WhatsAppGatewayHandler defines the interface for WhatsApp gateway
@@ -261,31 +261,50 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 		})
 	}
 
-	// If payment successful, update order status
-	if result.Success && result.OrderID != "" {
-		// Update order status to PAID
-		if err := h.orderRepo.UpdateStatus(ctx, result.OrderID, core.OrderStatusPaid); err != nil {
-			// Log error but don't fail the webhook (idempotency)
-			fmt.Printf("Error updating order status: %v\n", err)
-		} else {
-			// Get order to find customer phone
-			order, err := h.orderRepo.GetOrderByID(ctx, result.OrderID)
-			if err == nil && order != nil {
-				// Send WhatsApp notification to customer
-				message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹",
-					result.OrderID[:8], order.TotalAmount)
-				go func(phone, msg string) {
-					if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
-						fmt.Printf("Error sending payment confirmation: %v\n", err)
+	// Handle payment status
+	if result.OrderID != "" {
+		if result.Success {
+			// Update order status to PAID
+			if err := h.orderRepo.UpdateStatus(ctx, result.OrderID, core.OrderStatusPaid); err != nil {
+				// Log error but don't fail the webhook (idempotency)
+				fmt.Printf("Error updating order status: %v\n", err)
+			} else {
+				// Get order to find customer phone
+				order, err := h.orderRepo.GetByID(ctx, result.OrderID)
+				if err == nil && order != nil {
+					// Send WhatsApp notification to customer
+					message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹",
+						result.OrderID[:8], order.TotalAmount)
+					go func(phone, msg string) {
+						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
+							fmt.Printf("Error sending payment confirmation: %v\n", err)
+						}
+					}(order.CustomerPhone, message)
+
+					// Send notification to bar staff
+					go h.notifyBarStaff(ctx, order)
+
+					// Emit new_order event for dashboard SSE
+					if h.eventBus != nil {
+						h.eventBus.PublishNewOrder(order)
 					}
-				}(order.CustomerPhone, message)
-
-				// Send notification to bar staff
-				go h.notifyBarStaff(ctx, order)
-
-				// Emit new_order event for dashboard SSE
-				if h.eventBus != nil {
-					h.eventBus.PublishNewOrder(order)
+				}
+			}
+		} else {
+			// Payment failed or cancelled - update order status to FAILED
+			if err := h.orderRepo.UpdateStatus(ctx, result.OrderID, core.OrderStatusFailed); err != nil {
+				fmt.Printf("Error updating order status to FAILED: %v\n", err)
+			} else {
+				// Optionally notify customer of payment failure
+				order, err := h.orderRepo.GetByID(ctx, result.OrderID)
+				if err == nil && order != nil {
+					message := fmt.Sprintf("❌ Payment failed for order #%s. Please try again by sending 'hi' to restart.",
+						result.OrderID[:8])
+					go func(phone, msg string) {
+						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
+							fmt.Printf("Error sending payment failure notification: %v\n", err)
+						}
+					}(order.CustomerPhone, message)
 				}
 			}
 		}
@@ -338,7 +357,7 @@ func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
 // handleOrderCompletion handles the "Mark Done" button callback from bar staff
 func (h *Handler) handleOrderCompletion(ctx context.Context, barStaffPhone string, orderID string) {
 	// Get order to check current status
-	order, err := h.orderRepo.GetOrderByID(ctx, orderID)
+	order, err := h.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		log.Printf("Error fetching order for completion: %v", err)
 		h.whatsappGateway.SendText(ctx, barStaffPhone, "❌ Order not found")

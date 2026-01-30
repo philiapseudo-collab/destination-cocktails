@@ -56,7 +56,7 @@ type WhatsAppGateway interface {
 
 // PaymentGateway defines the interface for payment processing
 type PaymentGateway interface {
-	InitiateSTKPush(ctx context.Context, phone string, amount float64, orderID string) (string, error)
+	InitiateSTKPush(ctx context.Context, orderID string, phone string, amount float64) error
 	VerifyWebhook(ctx context.Context, signature string, payload []byte) bool
 	ProcessWebhook(ctx context.Context, payload []byte) (*PaymentWebhook, error)
 }
