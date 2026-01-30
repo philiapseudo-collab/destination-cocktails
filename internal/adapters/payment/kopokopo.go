@@ -217,9 +217,9 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	// Format amount as string (Kopo Kopo expects string)
 	amountStr := fmt.Sprintf("%.0f", amount)
 
-	// Build request payload
+	// Build request payload (Kopo Kopo incoming_payments format)
 	payload := STKPushRequest{
-		PaymentChannel: "M-PESA",
+		PaymentChannel: "M-PESA STK Push",
 		TillNumber:     c.tillNumber,
 	}
 	payload.Subscriber.PhoneNumber = phone
@@ -238,8 +238,8 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 		return fmt.Errorf("get access token: %w", err)
 	}
 
-	// Make API request
-	apiURL := fmt.Sprintf("%s/api/v1/stk_push_requests", c.baseURL)
+	// Make API request (correct Kopo Kopo endpoint)
+	apiURL := fmt.Sprintf("%s/api/v1/incoming_payments", c.baseURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
