@@ -40,6 +40,7 @@ type OrderRepositoryHandler interface {
 	UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error
 	GetByID(ctx context.Context, id string) (*core.Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*core.Order, error)
+	FindPendingByHashedPhoneAndAmount(ctx context.Context, hashedPhone string, amount float64) (*core.Order, error)
 	FindPendingByAmount(ctx context.Context, amount float64) (*core.Order, error)
 }
 
@@ -287,7 +288,19 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			}
 		}
 		
-		// Strategy 3: Fallback to amount-only matching (for buygoods webhooks without phone)
+		// Strategy 3: Match by hashed phone + amount (for buygoods webhooks with hashed phone)
+		// This is more precise than amount-only matching for concurrent orders
+		if order == nil && result.HashedPhone != "" && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByHashedPhoneAndAmount(ctx, result.HashedPhone, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding order by hashed phone+amount: %v\n", err)
+			} else if order != nil {
+				fmt.Printf("[DEBUG] Found order by hashed phone match: %s (phone: %s, amount: %.0f)\n", 
+					order.ID, order.CustomerPhone, order.TotalAmount)
+			}
+		}
+		
+		// Strategy 4: Fallback to amount-only matching (last resort)
 		// This matches the most recent pending order with the same amount within 30 minutes
 		if order == nil && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByAmount(ctx, result.Amount)
@@ -380,6 +393,14 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
 			if err != nil {
 				fmt.Printf("Error finding failed order by phone+amount: %v\n", err)
+			}
+		}
+		
+		// Fallback to hashed phone + amount matching
+		if order == nil && result.HashedPhone != "" && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByHashedPhoneAndAmount(ctx, result.HashedPhone, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding failed order by hashed phone+amount: %v\n", err)
 			}
 		}
 		

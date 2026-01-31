@@ -22,6 +22,7 @@ type OrderRepository interface {
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*Order, error)
+	FindPendingByHashedPhoneAndAmount(ctx context.Context, hashedPhone string, amount float64) (*Order, error) // Match by hashed phone from buygoods webhooks
 	FindPendingByAmount(ctx context.Context, amount float64) (*Order, error) // Fallback when phone unavailable
 }
 

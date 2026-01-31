@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dumu-tech/destination-cocktails/internal/core"
@@ -492,6 +495,88 @@ func (r *orderRepository) FindPendingByAmount(ctx context.Context, amount float6
 	order.Items = items
 
 	return order, nil
+}
+
+// FindPendingByHashedPhoneAndAmount finds a pending order by matching the hashed phone number
+// Kopo Kopo sends hashed_sender_phone in buygoods webhooks - we compute hashes of stored phones to match
+// This is more precise than amount-only matching for concurrent orders
+func (r *orderRepository) FindPendingByHashedPhoneAndAmount(ctx context.Context, hashedPhone string, amount float64) (*core.Order, error) {
+	if hashedPhone == "" {
+		return nil, nil // Can't match without hash
+	}
+	
+	// Find pending orders with matching amount within time window
+	cutoffTime := time.Now().Add(-30 * time.Minute)
+	var orderModels []OrderModel
+	
+	err := r.db.WithContext(ctx).Table("orders").
+		Where("status = ? AND total_amount = ? AND created_at > ?", 
+			"PENDING", amount, cutoffTime).
+		Order("created_at DESC").
+		Find(&orderModels).Error
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to find pending orders: %w", err)
+	}
+	
+	// Try to match by computing hash of each order's phone
+	for _, orderModel := range orderModels {
+		if matchesHashedPhone(orderModel.CustomerPhone, hashedPhone) {
+			fmt.Printf("[DEBUG] Hash match found: order %s, phone %s\n", orderModel.ID, orderModel.CustomerPhone)
+			
+			// Get order items with product names
+			items, err := r.fetchOrderItemsWithProductNames(ctx, orderModel.ID)
+			if err != nil {
+				return nil, err
+			}
+			
+			order := orderModel.ToDomain()
+			order.Items = items
+			return order, nil
+		}
+	}
+	
+	return nil, nil // No matching order found
+}
+
+// matchesHashedPhone checks if a phone number matches the hashed phone from Kopo Kopo
+// Tries multiple phone formats as Kopo Kopo's exact hashing format isn't documented
+func matchesHashedPhone(phone, hashedPhone string) bool {
+	// Normalize phone - remove spaces and special chars
+	phone = strings.ReplaceAll(phone, " ", "")
+	phone = strings.ReplaceAll(phone, "-", "")
+	
+	// Try various phone formats that Kopo Kopo might use
+	formats := []string{
+		phone,                                    // As stored (e.g., 254708116809)
+		"+" + phone,                              // With + prefix (+254708116809)
+		strings.TrimPrefix(phone, "+"),           // Without + prefix
+	}
+	
+	// Also try with/without country code variations
+	digits := extractLast9Digits(phone)
+	if digits != "" {
+		formats = append(formats, digits)         // Just 9 digits (708116809)
+		formats = append(formats, "0"+digits)     // Local format (0708116809)
+		formats = append(formats, "254"+digits)   // With country code
+		formats = append(formats, "+254"+digits)  // E.164 format
+	}
+	
+	for _, format := range formats {
+		hash := computeSHA256(format)
+		if hash == hashedPhone {
+			fmt.Printf("[DEBUG] Phone hash matched with format: %s\n", format)
+			return true
+		}
+	}
+	
+	return false
+}
+
+// computeSHA256 computes SHA256 hash of a string and returns hex-encoded result
+func computeSHA256(input string) string {
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:])
 }
 
 // Database Models (with GORM tags)
