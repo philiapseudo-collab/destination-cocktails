@@ -263,12 +263,20 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 		return fmt.Errorf("kopokopo API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	var stkResponse STKPushResponse
-	if err := json.Unmarshal(body, &stkResponse); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	// Kopo Kopo may return empty body on success (HTTP 201 with Location header)
+	// Only parse JSON if body is not empty
+	if len(body) > 0 {
+		var stkResponse STKPushResponse
+		if err := json.Unmarshal(body, &stkResponse); err != nil {
+			// Log parsing error but don't fail - the request was accepted
+			slog.Warn("Failed to parse Kopo Kopo response (request was successful)", "error", err.Error(), "body", string(body))
+		} else {
+			slog.Info("Kopo Kopo STK response", "reference", stkResponse.Reference, "status", stkResponse.Status)
+		}
+	} else {
+		slog.Info("Kopo Kopo STK push accepted", "order_id", orderID, "status_code", resp.StatusCode)
 	}
-
-	slog.Info("Kopo Kopo STK response", "reference", stkResponse.Reference, "status", stkResponse.Status)
+	
 	return nil
 }
 

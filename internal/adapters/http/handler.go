@@ -269,12 +269,16 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				// Log error but don't fail the webhook (idempotency)
 				fmt.Printf("Error updating order status: %v\n", err)
 			} else {
-				// Get order to find customer phone
+				// Get order to find customer phone and details
 				order, err := h.orderRepo.GetByID(ctx, result.OrderID)
 				if err == nil && order != nil {
-					// Send WhatsApp notification to customer
-					message := fmt.Sprintf("✅ Payment Received! Your order #%s (KES %.0f) has been confirmed. Your drinks are coming! 🍹",
-						result.OrderID[:8], order.TotalAmount)
+					// Send WhatsApp notification to customer with pickup code
+					message := fmt.Sprintf("✅ *Payment Received!*\n\n"+
+						"Your order has been confirmed 🍹\n\n"+
+						"*Pickup Code:* %s\n"+
+						"*Total:* KES %.0f\n\n"+
+						"Show this code to the bartender when collecting your drinks!",
+						order.PickupCode, order.TotalAmount)
 					go func(phone, msg string) {
 						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
 							fmt.Printf("Error sending payment confirmation: %v\n", err)

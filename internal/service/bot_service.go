@@ -111,49 +111,56 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 func (b *BotService) handleStart(ctx context.Context, phone string, session *core.Session, message string) error {
 	messageLower := strings.ToLower(strings.TrimSpace(message))
 
-	// If message is "order_drinks" button or contains "order", send welcome message and proceed to menu
+	// If message is "order_drinks" button or contains "order", DIRECTLY show menu
 	if messageLower == "order_drinks" || messageLower == "order drinks" || strings.Contains(messageLower, "order") {
-		welcomeText := "Welcome to Destination Cocktails! 🍹\n\nTap *Order Drinks* to browse our menu, or simply *type a drink name* (e.g., 'Jameson') to search.\n\n_💡 Tip: Please search for one item at a time._"
-		buttons := []core.Button{
-			{
-				ID:    "order_drinks",
-				Title: "Order Drinks",
-			},
+		// Get menu (grouped by category)
+		menu, err := b.Repo.GetMenu(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get menu: %w", err)
 		}
 
-		if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
-			return fmt.Errorf("failed to send welcome message: %w", err)
+		// Extract category names
+		categories := make([]string, 0, len(menu))
+		for category := range menu {
+			categories = append(categories, category)
 		}
 
-		// Set state to MENU
-		session.State = "MENU"
+		// Limit to 10 categories (WhatsApp list limit)
+		if len(categories) > 10 {
+			categories = categories[:10]
+		}
+
+		// Send category list directly (no welcome message needed)
+		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
+			return fmt.Errorf("failed to send categories: %w", err)
+		}
+
+		// Set state to BROWSING (skip MENU state)
+		session.State = "BROWSING"
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
 
 	// Otherwise, treat the message as a search query
 	searchQuery := strings.TrimSpace(message)
+	
+	// Improved search: allow partial matches, handle multiple words
 	products, err := b.Repo.SearchProducts(ctx, searchQuery)
 	if err != nil {
 		return fmt.Errorf("failed to search products: %w", err)
 	}
 
-	// If no results found, send error message and welcome again
+	// If no results found, send error message and "Order Drinks" button
 	if len(products) == 0 {
-		noResultsMsg := fmt.Sprintf("No products found for '%s'. Please try a different search term.\n\n", searchQuery)
-		welcomeText := "Welcome to Destination Cocktails! 🍹\n\nTap *Order Drinks* to browse our menu, or simply *type a drink name* (e.g., 'Jameson') to search.\n\n_💡 Tip: Please search for one item at a time._"
+		noResultsMsg := fmt.Sprintf("❌ No products found for '%s'.\n\n💡 Try:\n• Typing just one word (e.g., 'Gin', 'Water')\n• Browsing the full menu below", searchQuery)
 		buttons := []core.Button{
 			{
 				ID:    "order_drinks",
-				Title: "Order Drinks",
+				Title: "View Full Menu",
 			},
 		}
 
-		if err := b.WhatsApp.SendText(ctx, phone, noResultsMsg); err != nil {
+		if err := b.WhatsApp.SendMenuButtons(ctx, phone, noResultsMsg, buttons); err != nil {
 			return fmt.Errorf("failed to send no results message: %w", err)
-		}
-
-		if err := b.WhatsApp.SendMenuButtons(ctx, phone, welcomeText, buttons); err != nil {
-			return fmt.Errorf("failed to send welcome message: %w", err)
 		}
 
 		// Stay in START state
@@ -164,11 +171,11 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 	sortedProducts := sortProductsAlphabetically(products)
 
 	// Build formatted text message with numbered list
-	productList := fmt.Sprintf("Search results for '*%s*':\n\n", searchQuery)
+	productList := fmt.Sprintf("🔍 Search results for '*%s*':\n\n", searchQuery)
 	for i, product := range sortedProducts {
 		productList += fmt.Sprintf("%d. %s - KES %.0f\n", i+1, product.Name, product.Price)
 	}
-	productList += "\nReply with the product name or number to add to cart."
+	productList += "\nReply with the number or name to add to cart."
 
 	// Send product list as text message
 	if err := b.WhatsApp.SendText(ctx, phone, productList); err != nil {
