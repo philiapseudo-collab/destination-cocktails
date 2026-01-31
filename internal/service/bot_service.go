@@ -22,6 +22,16 @@ type BotService struct {
 	UserRepo  core.UserRepository
 }
 
+// State constants
+const (
+	StateStart                  = "START"
+	StateBrowsing              = "BROWSING"
+	StateSelectingProduct      = "SELECTING_PRODUCT"
+	StateQuantity              = "QUANTITY"
+	StateConfirmOrder          = "CONFIRM_ORDER"
+	StateWaitingForPaymentPhone = "WAITING_FOR_PAYMENT_PHONE"
+)
+
 // NewBotService creates a new bot service
 func NewBotService(repo core.ProductRepository, session core.SessionRepository, whatsapp core.WhatsAppGateway, payment core.PaymentGateway, orderRepo core.OrderRepository, userRepo core.UserRepository) *BotService {
 	return &BotService{
@@ -99,6 +109,8 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 		return b.handleQuantity(ctx, phone, session, message)
 	case "CONFIRM_ORDER":
 		return b.handleConfirmOrder(ctx, phone, session, message)
+	case StateWaitingForPaymentPhone:
+		return b.handlePaymentPhoneInput(ctx, phone, session, message)
 	default:
 		// Unknown state, reset to START
 		session.State = "START"
@@ -555,84 +567,16 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 	}
 
 	if messageLower == "checkout" || strings.Contains(messageLower, "checkout") {
-		// Checkout flow: Create order -> Initiate STK Push
-		if len(session.Cart) == 0 {
-			return b.WhatsApp.SendText(ctx, phone, "Your cart is empty. Please add items first.")
-		}
-
-		// Calculate total
-		total := 0.0
-		for _, item := range session.Cart {
-			total += item.Price * float64(item.Quantity)
-		}
-
-		// Upsert user (Get or Create)
-		user, err := b.UserRepo.GetOrCreateByPhone(ctx, phone)
-		if err != nil {
-			return fmt.Errorf("failed to get or create user: %w", err)
-		}
-
-		// Generate order ID
-		orderID := uuid.New().String()
-
-		// Generate 4-digit pickup code
-		pickupCode := generatePickupCode()
-
-		// Create order items from cart
-		orderItems := make([]core.OrderItem, len(session.Cart))
-		for i, cartItem := range session.Cart {
-			orderItems[i] = core.OrderItem{
-				ID:          uuid.New().String(),
-				OrderID:     orderID,
-				ProductID:   cartItem.ProductID,
-				Quantity:    cartItem.Quantity,
-				PriceAtTime: cartItem.Price,
-			}
-		}
-
-		// Create order with PENDING status
-		order := &core.Order{
-			ID:            orderID,
-			UserID:        user.ID,
-			CustomerPhone: phone,
-			TableNumber:   "", // TODO: Ask for table number or get from session
-			TotalAmount:   total,
-			Status:        core.OrderStatusPending,
-			PaymentMethod: string(core.PaymentMethodMpesa),
-			PickupCode:    pickupCode,
-			Items:         orderItems,
-			CreatedAt:     time.Now(),
-		}
-
-		if err := b.OrderRepo.CreateOrder(ctx, order); err != nil {
-			return fmt.Errorf("failed to create order: %w", err)
-		}
-
-		// Initiate STK Push (queued for async processing)
-		err = b.Payment.InitiateSTKPush(ctx, orderID, phone, total)
-		if err != nil {
-			// If queueing fails (system busy), update order status to FAILED
-			b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
-			return fmt.Errorf("failed to initiate STK push: %w", err)
-		}
-
-		// Send confirmation message
-		cartSummary := "📦 Order Summary:\n\n"
-		for _, item := range session.Cart {
-			itemTotal := item.Price * float64(item.Quantity)
-			cartSummary += fmt.Sprintf("%s x%d = KES %.0f\n", item.Name, item.Quantity, itemTotal)
-		}
-		cartSummary += fmt.Sprintf("\n💰 Total: KES %.0f\n\n", total)
-		cartSummary += "💳 I've sent an M-Pesa prompt to your phone. Please enter your PIN to complete the payment."
-
-		if err := b.WhatsApp.SendText(ctx, phone, cartSummary); err != nil {
-			return fmt.Errorf("failed to send confirmation: %w", err)
-		}
-
-		// Clear cart and reset state
-		session.Cart = []core.CartItem{}
-		session.State = "START"
-		return b.Session.Set(ctx, phone, session, 7200)
+		return b.handleCheckout(ctx, phone, session)
+	}
+	
+	// Handle payment confirmation buttons (pay_self, pay_other)
+	if messageLower == "pay_self" {
+		return b.handlePaySelf(ctx, phone, session)
+	}
+	
+	if messageLower == "pay_other" {
+		return b.handlePayOther(ctx, phone, session)
 	}
 
 	// Invalid input - resend buttons
@@ -653,4 +597,191 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 // generatePickupCode generates a random 4-digit pickup code
 func generatePickupCode() string {
 	return fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
+}
+
+// handleCheckout initiates the checkout process by asking for payment number confirmation
+func (b *BotService) handleCheckout(ctx context.Context, phone string, session *core.Session) error {
+	// Validate cart
+	if len(session.Cart) == 0 {
+		return b.WhatsApp.SendText(ctx, phone, "Your cart is empty. Please add items first.")
+	}
+
+	// Calculate total
+	total := 0.0
+	for _, item := range session.Cart {
+		total += item.Price * float64(item.Quantity)
+	}
+
+	// Send button prompt asking which number to charge
+	promptMsg := fmt.Sprintf("Your total is *KES %.0f*.\n\nWhich M-Pesa number should we charge?", total)
+	
+	buttons := []core.Button{
+		{
+			ID:    "pay_self",
+			Title: "Use My Number",
+		},
+		{
+			ID:    "pay_other",
+			Title: "Different Number",
+		},
+	}
+
+	if err := b.WhatsApp.SendMenuButtons(ctx, phone, promptMsg, buttons); err != nil {
+		return fmt.Errorf("failed to send payment prompt: %w", err)
+	}
+
+	// Keep state as CONFIRM_ORDER (user will respond with button click)
+	return b.Session.Set(ctx, phone, session, 7200)
+}
+
+// handlePaySelf handles when user chooses to use their own WhatsApp number
+func (b *BotService) handlePaySelf(ctx context.Context, phone string, session *core.Session) error {
+	// Use the WhatsApp phone number
+	return b.processPayment(ctx, phone, session, phone)
+}
+
+// handlePayOther handles when user chooses to use a different number
+func (b *BotService) handlePayOther(ctx context.Context, phone string, session *core.Session) error {
+	// Prompt for phone number
+	promptMsg := "Please type the Safaricom M-Pesa number you want to use (e.g., 0712345678)."
+	
+	if err := b.WhatsApp.SendText(ctx, phone, promptMsg); err != nil {
+		return fmt.Errorf("failed to send phone prompt: %w", err)
+	}
+
+	// Set state to wait for phone input
+	session.State = StateWaitingForPaymentPhone
+	return b.Session.Set(ctx, phone, session, 7200)
+}
+
+// handlePaymentPhoneInput handles user input when waiting for alternative payment phone
+func (b *BotService) handlePaymentPhoneInput(ctx context.Context, phone string, session *core.Session, message string) error {
+	// Normalize and validate the phone number
+	normalizedPhone, err := normalizePhone(message)
+	if err != nil || !isValidKenyanMobile(normalizedPhone) {
+		// Invalid phone number - ask to try again (keep state)
+		errorMsg := "That doesn't look like a valid phone number. Please try again (e.g., 0712345678)."
+		return b.WhatsApp.SendText(ctx, phone, errorMsg)
+	}
+
+	// Process payment with the normalized phone
+	return b.processPayment(ctx, phone, session, normalizedPhone)
+}
+
+// processPayment creates the order and initiates STK push
+func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, session *core.Session, paymentPhone string) error {
+	// Calculate total
+	total := 0.0
+	for _, item := range session.Cart {
+		total += item.Price * float64(item.Quantity)
+	}
+
+	// Upsert user (Get or Create) using WhatsApp phone
+	user, err := b.UserRepo.GetOrCreateByPhone(ctx, whatsappPhone)
+	if err != nil {
+		return fmt.Errorf("failed to get or create user: %w", err)
+	}
+
+	// Generate order ID
+	orderID := uuid.New().String()
+
+	// Generate 4-digit pickup code
+	pickupCode := generatePickupCode()
+
+	// Create order items from cart
+	orderItems := make([]core.OrderItem, len(session.Cart))
+	for i, cartItem := range session.Cart {
+		orderItems[i] = core.OrderItem{
+			ID:          uuid.New().String(),
+			OrderID:     orderID,
+			ProductID:   cartItem.ProductID,
+			Quantity:    cartItem.Quantity,
+			PriceAtTime: cartItem.Price,
+		}
+	}
+
+	// Create order with PENDING status
+	// CRITICAL: Use paymentPhone for CustomerPhone (for webhook matching)
+	order := &core.Order{
+		ID:            orderID,
+		UserID:        user.ID,
+		CustomerPhone: paymentPhone, // Use payment phone for webhook matching
+		TableNumber:   "",            // TODO: Ask for table number or get from session
+		TotalAmount:   total,
+		Status:        core.OrderStatusPending,
+		PaymentMethod: string(core.PaymentMethodMpesa),
+		PickupCode:    pickupCode,
+		Items:         orderItems,
+		CreatedAt:     time.Now(),
+	}
+
+	if err := b.OrderRepo.CreateOrder(ctx, order); err != nil {
+		return fmt.Errorf("failed to create order: %w", err)
+	}
+
+	// Initiate STK Push to the payment phone
+	err = b.Payment.InitiateSTKPush(ctx, orderID, paymentPhone, total)
+	if err != nil {
+		// If queueing fails (system busy), update order status to FAILED
+		b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
+		return fmt.Errorf("failed to initiate STK push: %w", err)
+	}
+
+	// Send confirmation message with the phone number being charged
+	cartSummary := "📦 Order Summary:\n\n"
+	for _, item := range session.Cart {
+		itemTotal := item.Price * float64(item.Quantity)
+		cartSummary += fmt.Sprintf("%s x%d = KES %.0f\n", item.Name, item.Quantity, itemTotal)
+	}
+	cartSummary += fmt.Sprintf("\n💰 Total: KES %.0f\n\n", total)
+	cartSummary += fmt.Sprintf("💳 I've sent an M-Pesa prompt to *%s*. Please enter your PIN to complete the payment.", paymentPhone)
+
+	if err := b.WhatsApp.SendText(ctx, whatsappPhone, cartSummary); err != nil {
+		return fmt.Errorf("failed to send confirmation: %w", err)
+	}
+
+	// Clear cart and reset state
+	session.Cart = []core.CartItem{}
+	session.State = "START"
+	return b.Session.Set(ctx, whatsappPhone, session, 7200)
+}
+
+// normalizePhone normalizes a Kenyan phone number to +254xxxxxxxxx format
+// Supports: 07..., 01..., 254..., +254..., 7..., 1...
+func normalizePhone(phone string) (string, error) {
+	// Remove spaces and dashes
+	phone = strings.ReplaceAll(phone, " ", "")
+	phone = strings.ReplaceAll(phone, "-", "")
+	phone = strings.TrimSpace(phone)
+	
+	// Remove leading +
+	phone = strings.TrimPrefix(phone, "+")
+	
+	// Handle different formats
+	if strings.HasPrefix(phone, "254") {
+		// Already in 254xxxxxxxxx format
+		if len(phone) == 12 {
+			return "+" + phone, nil
+		}
+		return "", fmt.Errorf("invalid phone number format")
+	} else if strings.HasPrefix(phone, "07") || strings.HasPrefix(phone, "01") {
+		// 07xxxxxxxx or 01xxxxxxxx -> +2547xxxxxxxx or +2541xxxxxxxx
+		if len(phone) == 10 {
+			return "+254" + phone[1:], nil
+		}
+		return "", fmt.Errorf("invalid phone number format")
+	} else if strings.HasPrefix(phone, "7") || strings.HasPrefix(phone, "1") {
+		// 7xxxxxxxx or 1xxxxxxxx -> +2547xxxxxxxx or +2541xxxxxxxx
+		if len(phone) == 9 {
+			return "+254" + phone, nil
+		}
+		return "", fmt.Errorf("invalid phone number format")
+	}
+	
+	return "", fmt.Errorf("unsupported phone number format")
+}
+
+// isValidKenyanMobile validates that a normalized phone starts with +2547 or +2541
+func isValidKenyanMobile(normalizedPhone string) bool {
+	return strings.HasPrefix(normalizedPhone, "+2547") || strings.HasPrefix(normalizedPhone, "+2541")
 }
