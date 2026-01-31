@@ -40,6 +40,7 @@ type OrderRepositoryHandler interface {
 	UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error
 	GetByID(ctx context.Context, id string) (*core.Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*core.Order, error)
+	FindPendingByAmount(ctx context.Context, amount float64) (*core.Order, error)
 }
 
 // WhatsAppGatewayHandler defines the interface for WhatsApp gateway
@@ -286,6 +287,18 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			}
 		}
 		
+		// Strategy 3: Fallback to amount-only matching (for buygoods webhooks without phone)
+		// This matches the most recent pending order with the same amount within 30 minutes
+		if order == nil && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByAmount(ctx, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding order by amount: %v\n", err)
+			} else if order != nil {
+				fmt.Printf("[DEBUG] Found order by amount-only fallback: %s (phone: %s, amount: %.0f)\n", 
+					order.ID, order.CustomerPhone, order.TotalAmount)
+			}
+		}
+		
 		// If no order found, log as orphaned payment (only if we had identifiers)
 		if order == nil {
 			if result.OrderID != "" || result.Phone != "" {
@@ -367,6 +380,14 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
 			if err != nil {
 				fmt.Printf("Error finding failed order by phone+amount: %v\n", err)
+			}
+		}
+		
+		// Fallback to amount-only matching for buygoods webhooks
+		if order == nil && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByAmount(ctx, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding failed order by amount: %v\n", err)
 			}
 		}
 		

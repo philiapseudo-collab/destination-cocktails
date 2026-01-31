@@ -22,6 +22,7 @@ type OrderRepository interface {
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*Order, error)
+	FindPendingByAmount(ctx context.Context, amount float64) (*Order, error) // Fallback when phone unavailable
 }
 
 // UserRepository defines the interface for user data access
@@ -64,12 +65,13 @@ type PaymentGateway interface {
 
 // PaymentWebhook represents the structure of a payment webhook result
 type PaymentWebhook struct {
-	OrderID   string
-	Status    string
-	Reference string
-	Amount    float64
-	Phone     string  // Sender phone number from webhook
-	Success   bool
+	OrderID     string
+	Status      string
+	Reference   string
+	Amount      float64
+	Phone       string  // Sender phone number from webhook (may be empty for buygoods)
+	HashedPhone string  // SHA256 hashed phone from buygoods webhooks
+	Success     bool
 }
 
 // AdminUserRepository defines the interface for admin user data access

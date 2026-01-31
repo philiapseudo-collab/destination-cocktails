@@ -460,6 +460,40 @@ func extractLast9Digits(phone string) string {
 	return digits
 }
 
+// FindPendingByAmount finds the most recent pending order matching amount only
+// Used as fallback when phone number is not available (e.g., buygoods webhooks)
+// Only matches orders created within the last 30 minutes for safety
+func (r *orderRepository) FindPendingByAmount(ctx context.Context, amount float64) (*core.Order, error) {
+	var orderModel OrderModel
+	
+	// Find most recent pending order with matching amount, created within last 30 minutes
+	cutoffTime := time.Now().Add(-30 * time.Minute)
+	
+	err := r.db.WithContext(ctx).Table("orders").
+		Where("status = ? AND total_amount = ? AND created_at > ?", 
+			"PENDING", amount, cutoffTime).
+		Order("created_at DESC").
+		First(&orderModel).Error
+	
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // No matching order found (not an error)
+		}
+		return nil, fmt.Errorf("failed to find pending order by amount: %w", err)
+	}
+
+	// Get order items with product names
+	items, err := r.fetchOrderItemsWithProductNames(ctx, orderModel.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	order := orderModel.ToDomain()
+	order.Items = items
+
+	return order, nil
+}
+
 // Database Models (with GORM tags)
 
 // ProductModel represents the product table structure

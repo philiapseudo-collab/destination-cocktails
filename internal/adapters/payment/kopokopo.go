@@ -391,6 +391,7 @@ type PaymentWebhookPayload struct {
 			Reference          string  `json:"reference"`
 			TillNumber         string  `json:"till_number"`
 			SenderPhoneNumber  string  `json:"sender_phone_number"`
+			HashedSenderPhone  string  `json:"hashed_sender_phone"` // SHA256 hash of sender phone (for buygoods webhooks)
 			OriginationTime    string  `json:"origination_time"`
 			SenderFirstName    string  `json:"sender_first_name"`
 			SenderLastName     string  `json:"sender_last_name"`
@@ -506,29 +507,26 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 	}
 	
 	// Debug: Log parsed webhook structure
-	fmt.Printf("[DEBUG] Buygoods webhook - Topic: %s, Status: %s, Phone: %s, Amount: %s, Reference: %s\n",
+	fmt.Printf("[DEBUG] Buygoods webhook - Topic: %s, Status: %s, Phone: %s, HashedPhone: %s, Amount: %s, Reference: %s\n",
 		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber, 
-		webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
+		webhook.Event.Resource.HashedSenderPhone, webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction
+	// Note: Buygoods webhooks may not include sender_phone_number (only hashed_sender_phone)
+	// So we determine success based on topic and status only
 	isSuccess := (webhook.Topic == "buygoods_transaction_received" ||
 		strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
 		(webhook.Event.Resource.Status == "Success" ||
 			webhook.Event.Resource.Status == "Received" ||
 			strings.ToLower(webhook.Event.Resource.Status) == "success")
 
-	// If no sender phone is provided, we can't match to an order reliably.
-	// Treat as informational only and avoid triggering orphaned warnings downstream.
-	if strings.TrimSpace(webhook.Event.Resource.SenderPhoneNumber) == "" {
-		isSuccess = false
-	}
-
 	result := &core.PaymentWebhook{
-		OrderID:   "", // Will be matched in handler using phone + amount
-		Status:    webhook.Event.Resource.Status,
-		Reference: webhook.Event.Resource.Reference,
-		Phone:     webhook.Event.Resource.SenderPhoneNumber,
-		Success:   isSuccess,
+		OrderID:     "", // Will be matched in handler using phone + amount, or amount alone
+		Status:      webhook.Event.Resource.Status,
+		Reference:   webhook.Event.Resource.Reference,
+		Phone:       webhook.Event.Resource.SenderPhoneNumber,
+		HashedPhone: webhook.Event.Resource.HashedSenderPhone, // For buygoods webhooks
+		Success:     isSuccess,
 	}
 
 	// Parse amount if available
