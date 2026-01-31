@@ -89,8 +89,8 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 	// OAuth: fetch/cache token
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
-	// Refresh if expired or within 5 minutes of expiry
-	if time.Now().Add(5 * time.Minute).Before(c.tokenExpiry) && c.accessToken != "" {
+	// Return cached token if it's still valid (more than 5 minutes before expiry)
+	if c.accessToken != "" && time.Now().Add(5*time.Minute).Before(c.tokenExpiry) {
 		return c.accessToken, nil
 	}
 	token, expiresIn, err := c.fetchOAuthToken(ctx)
@@ -211,7 +211,7 @@ func (c *Client) processQueue() {
 
 // sendSTKPush sends an M-Pesa STK Push request to Kopo Kopo API (internal worker method).
 func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, amount float64) error {
-	// Sanitize phone number: remove leading 0, ensure +254 format
+	// Sanitize phone number: remove leading 0, +, and ensure 254xxxxxxxxx format (no + prefix)
 	phone = sanitizePhone(phone)
 
 	// Format amount as string (Kopo Kopo expects string)
@@ -394,7 +394,8 @@ func (c *Client) ProcessWebhook(ctx context.Context, payload []byte) (*core.Paym
 	return result, nil
 }
 
-// sanitizePhone converts phone number to E.164 format (+254...)
+// sanitizePhone converts phone number to Kopo Kopo STK format (254xxxxxxxxx - no + prefix)
+// Kopo Kopo expects the number WITHOUT the + prefix for STK Push to work correctly
 func sanitizePhone(phone string) string {
 	// Remove all spaces and dashes
 	phone = strings.ReplaceAll(phone, " ", "")
@@ -413,6 +414,6 @@ func sanitizePhone(phone string) string {
 		phone = "254" + phone
 	}
 
-	// Add + prefix
-	return "+" + phone
+	// IMPORTANT: Return WITHOUT + prefix (Kopo Kopo STK requirement)
+	return phone
 }
