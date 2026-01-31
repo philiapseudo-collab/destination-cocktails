@@ -116,6 +116,8 @@ type STKPushRequest struct {
 	PaymentChannel string `json:"payment_channel"`
 	TillNumber     string `json:"till_number"`
 	Subscriber     struct {
+		FirstName   string `json:"first_name,omitempty"`
+		LastName    string `json:"last_name,omitempty"`
 		PhoneNumber string `json:"phone_number"`
 	} `json:"subscriber"`
 	Amount struct {
@@ -186,8 +188,10 @@ func (c *Client) processQueue() {
 
 // sendSTKPush sends an M-Pesa STK Push request to Kopo Kopo API (internal worker method).
 func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, amount float64) error {
-	// Validate and sanitize phone number to E.164 format (+254xxxxxxxxx)
-	phone, err := sanitizeAndValidatePhone(phone)
+	// Validate and sanitize phone number
+	// Use format WITHOUT + prefix (254xxxxxxxxx) as this is more compatible with M-Pesa STK
+	// Some phones/SIM cards have issues with the + prefix causing PIN dialog freezes
+	phone, err := sanitizeAndValidatePhoneWithoutPlus(phone)
 	if err != nil {
 		return fmt.Errorf("invalid phone number: %w", err)
 	}
@@ -196,10 +200,12 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	amountStr := fmt.Sprintf("%.0f", amount)
 
 	// Build request payload (Kopo Kopo incoming_payments format)
+	// Include subscriber first_name to help M-Pesa validate the request
 	payload := STKPushRequest{
 		PaymentChannel: "M-PESA STK Push",
 		TillNumber:     c.tillNumber,
 	}
+	payload.Subscriber.FirstName = "Customer" // Generic name helps with M-Pesa validation
 	payload.Subscriber.PhoneNumber = phone
 	payload.Amount.Currency = "KES"
 	payload.Amount.Value = amountStr
@@ -211,13 +217,15 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 		return fmt.Errorf("failed to marshal STK push request: %w", err)
 	}
 
-	// Log the exact request being sent (for debugging)
+	// Log the exact request being sent (detailed for debugging STK issues)
 	slog.Info("Sending STK push request",
 		"order_id", orderID,
 		"phone", phone,
+		"phone_prefix", phone[3:6], // Log the prefix (e.g., "708" or "114") for debugging
 		"amount", amountStr,
 		"till", c.tillNumber,
-		"callback", c.callbackURL)
+		"callback", c.callbackURL,
+		"payload", string(jsonData))
 
 	// Get fresh OAuth token (force refresh if needed)
 	token, err := c.getAccessTokenWithRefresh(ctx)
@@ -540,10 +548,9 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 	return result, nil
 }
 
-// sanitizeAndValidatePhone converts phone number to E.164 format (+254xxxxxxxxx)
-// and validates it's a valid Kenyan mobile number.
-// Kopo Kopo STK Push requires E.164 format with + prefix for proper delivery.
-func sanitizeAndValidatePhone(phone string) (string, error) {
+// sanitizeAndValidatePhoneWithoutPlus converts phone number to format 254xxxxxxxxx (WITHOUT + prefix)
+// Some M-Pesa STK implementations work better without the + prefix, avoiding PIN dialog freezes.
+func sanitizeAndValidatePhoneWithoutPlus(phone string) (string, error) {
 	// Remove all spaces, dashes, and other common separators
 	phone = strings.ReplaceAll(phone, " ", "")
 	phone = strings.ReplaceAll(phone, "-", "")
@@ -551,7 +558,7 @@ func sanitizeAndValidatePhone(phone string) (string, error) {
 	phone = strings.ReplaceAll(phone, ")", "")
 	phone = strings.TrimSpace(phone)
 
-	// Remove leading + if present (we'll add it back consistently)
+	// Remove leading + if present
 	phone = strings.TrimPrefix(phone, "+")
 
 	// Handle different input formats
@@ -581,6 +588,18 @@ func sanitizeAndValidatePhone(phone string) (string, error) {
 		return "", fmt.Errorf("invalid Kenyan mobile prefix: must start with 2547 or 2541, got 254%s", prefix)
 	}
 
-	// Return in E.164 format WITH + prefix (required by Kopo Kopo for consistent STK delivery)
+	// Return WITHOUT + prefix (helps avoid STK PIN dialog freezes on some phones)
+	return phone, nil
+}
+
+// sanitizeAndValidatePhone converts phone number to E.164 format (+254xxxxxxxxx)
+// and validates it's a valid Kenyan mobile number.
+// Note: For STK push, use sanitizeAndValidatePhoneWithoutPlus instead.
+func sanitizeAndValidatePhone(phone string) (string, error) {
+	phone, err := sanitizeAndValidatePhoneWithoutPlus(phone)
+	if err != nil {
+		return "", err
+	}
+	// Return in E.164 format WITH + prefix
 	return "+" + phone, nil
 }
