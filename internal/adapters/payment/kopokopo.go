@@ -353,10 +353,18 @@ type PaymentWebhookPayload struct {
 
 // ProcessWebhook processes the payment webhook and extracts order information
 func (c *Client) ProcessWebhook(ctx context.Context, payload []byte) (*core.PaymentWebhook, error) {
+	// Debug: Log raw payload
+	fmt.Printf("[DEBUG] Raw webhook payload: %s\n", string(payload))
+	
 	var webhook PaymentWebhookPayload
 	if err := json.Unmarshal(payload, &webhook); err != nil {
 		return nil, fmt.Errorf("failed to parse webhook payload: %w", err)
 	}
+	
+	// Debug: Log parsed webhook structure
+	fmt.Printf("[DEBUG] Parsed webhook - Topic: %s, Status: %s, Phone: %s, Amount: %s, Reference: %s\n",
+		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber, 
+		webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction
 	// Kopo Kopo uses topic like "buygoods_transaction_received"
