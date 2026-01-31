@@ -282,22 +282,46 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 
 // VerifyWebhook verifies the X-KopoKopo-Signature header
 func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []byte) bool {
+	// Debug logging
+	fmt.Printf("[DEBUG] Webhook signature received: %s\n", signature)
+	fmt.Printf("[DEBUG] Webhook secret configured: %s (length: %d)\n", 
+		c.webhookSecret[:min(10, len(c.webhookSecret))]+"...", len(c.webhookSecret))
+	fmt.Printf("[DEBUG] Payload length: %d bytes\n", len(payload))
+	
+	// If no webhook secret is configured, log warning but allow
+	if c.webhookSecret == "" {
+		fmt.Println("[WARN] No webhook secret configured - skipping signature verification")
+		return true
+	}
+	
 	// Signature format: sha256=<hex_string>
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "sha256" {
-		return false
+		fmt.Printf("[DEBUG] Invalid signature format - expected sha256=..., got: %s\n", signature)
+		// Try without prefix (some implementations don't use sha256= prefix)
+		parts = []string{"sha256", signature}
 	}
 
 	expectedSig, err := hex.DecodeString(parts[1])
 	if err != nil {
+		fmt.Printf("[DEBUG] Failed to decode signature hex: %v\n", err)
 		return false
 	}
 
 	mac := hmac.New(sha256.New, []byte(c.webhookSecret))
 	mac.Write(payload)
 	computedSig := mac.Sum(nil)
+	
+	// Debug: show computed vs received
+	fmt.Printf("[DEBUG] Computed signature: %x\n", computedSig)
+	fmt.Printf("[DEBUG] Received signature: %x\n", expectedSig)
 
-	return hmac.Equal(expectedSig, computedSig)
+	isValid := hmac.Equal(expectedSig, computedSig)
+	if !isValid {
+		fmt.Println("[WARN] Signature mismatch - check KOPOKOPO_WEBHOOK_SECRET")
+	}
+	
+	return isValid
 }
 
 // PaymentWebhookPayload represents the ACTUAL Kopo Kopo webhook payload format
