@@ -34,11 +34,17 @@ func main() {
 	log.Println("✓ Database connected")
 
 	// Initialize Redis client
-	redisClient := goredis.NewClient(&goredis.Options{
-		Addr:     cfg.RedisURL,
-		Password: cfg.RedisPassword,
-		DB:       0,
-	})
+	redisOpts, err := goredis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("Failed to parse Redis URL: %v", err)
+	}
+	
+	// Override password if specified separately
+	if cfg.RedisPassword != "" {
+		redisOpts.Password = cfg.RedisPassword
+	}
+	
+	redisClient := goredis.NewClient(redisOpts)
 	
 	// Test Redis connection
 	if err := redisClient.Ping(context.Background()).Err(); err != nil {
