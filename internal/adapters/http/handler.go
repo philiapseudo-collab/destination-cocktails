@@ -374,9 +374,17 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusFailed); err != nil {
 				fmt.Printf("Error updating order status to FAILED: %v\n", err)
 			} else {
-				// Notify customer of payment failure
-				message := fmt.Sprintf("❌ Payment failed for order #%s. Please try again by sending 'hi' to restart.",
-					order.ID[:8])
+				// Notify customer of payment failure with helpful message
+				message := fmt.Sprintf("❌ *Payment Not Completed*\n\n"+
+					"Your M-Pesa payment for KES %.0f was cancelled or timed out.\n\n"+
+					"*Common reasons:*\n"+
+					"• PIN entry timed out (you have ~60 seconds)\n"+
+					"• Payment was cancelled\n"+
+					"• Network issues\n\n"+
+					"*To try again:*\n"+
+					"Send 'hi' to start a new order.\n\n"+
+					"_If you completed payment but see this message, please contact support._",
+					order.TotalAmount)
 				go func(phone, msg string) {
 					if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
 						fmt.Printf("Error sending payment failure notification: %v\n", err)

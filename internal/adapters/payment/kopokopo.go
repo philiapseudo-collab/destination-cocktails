@@ -77,31 +77,6 @@ func NewClient() (*Client, error) {
 	return c, nil
 }
 
-// getAccessToken returns a valid Bearer token, fetching via OAuth if needed (client credentials).
-func (c *Client) getAccessToken(ctx context.Context) (string, error) {
-	// If we have a static token (e.g. from env), use it
-	c.tokenMu.Lock()
-	staticToken := c.accessToken
-	c.tokenMu.Unlock()
-	if staticToken != "" {
-		return staticToken, nil
-	}
-	// OAuth: fetch/cache token
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	// Return cached token if it's still valid (more than 5 minutes before expiry)
-	if c.accessToken != "" && time.Now().Add(5*time.Minute).Before(c.tokenExpiry) {
-		return c.accessToken, nil
-	}
-	token, expiresIn, err := c.fetchOAuthToken(ctx)
-	if err != nil {
-		return "", err
-	}
-	c.accessToken = token
-	c.tokenExpiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
-	return c.accessToken, nil
-}
-
 func (c *Client) fetchOAuthToken(ctx context.Context) (accessToken string, expiresIn int, err error) {
 	authURL := strings.TrimSuffix(c.baseURL, "/") + "/oauth/token"
 	form := url.Values{}
@@ -211,10 +186,13 @@ func (c *Client) processQueue() {
 
 // sendSTKPush sends an M-Pesa STK Push request to Kopo Kopo API (internal worker method).
 func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, amount float64) error {
-	// Sanitize phone number: remove leading 0, +, and ensure 254xxxxxxxxx format (no + prefix)
-	phone = sanitizePhone(phone)
+	// Validate and sanitize phone number to E.164 format (+254xxxxxxxxx)
+	phone, err := sanitizeAndValidatePhone(phone)
+	if err != nil {
+		return fmt.Errorf("invalid phone number: %w", err)
+	}
 
-	// Format amount as string (Kopo Kopo expects string)
+	// Format amount as integer string (Kopo Kopo expects whole numbers for KES)
 	amountStr := fmt.Sprintf("%.0f", amount)
 
 	// Build request payload (Kopo Kopo incoming_payments format)
@@ -233,7 +211,16 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 		return fmt.Errorf("failed to marshal STK push request: %w", err)
 	}
 
-	token, err := c.getAccessToken(ctx)
+	// Log the exact request being sent (for debugging)
+	slog.Info("Sending STK push request",
+		"order_id", orderID,
+		"phone", phone,
+		"amount", amountStr,
+		"till", c.tillNumber,
+		"callback", c.callbackURL)
+
+	// Get fresh OAuth token (force refresh if needed)
+	token, err := c.getAccessTokenWithRefresh(ctx)
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
 	}
@@ -246,6 +233,7 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 
 	resp, err := c.httpClient.Do(req)
@@ -259,16 +247,26 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 		return fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// Handle API errors with retry on 401 (token expired)
+	if resp.StatusCode == http.StatusUnauthorized {
+		slog.Warn("Token expired, refreshing and retrying", "order_id", orderID)
+		c.clearCachedToken()
+		return c.sendSTKPush(ctx, orderID, phone, amount) // Retry once with fresh token
+	}
+
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		slog.Error("Kopo Kopo API error",
+			"status", resp.StatusCode,
+			"body", string(body),
+			"order_id", orderID,
+			"phone", phone)
 		return fmt.Errorf("kopokopo API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	// Kopo Kopo may return empty body on success (HTTP 201 with Location header)
-	// Only parse JSON if body is not empty
 	if len(body) > 0 {
 		var stkResponse STKPushResponse
 		if err := json.Unmarshal(body, &stkResponse); err != nil {
-			// Log parsing error but don't fail - the request was accepted
 			slog.Warn("Failed to parse Kopo Kopo response (request was successful)", "error", err.Error(), "body", string(body))
 		} else {
 			slog.Info("Kopo Kopo STK response", "reference", stkResponse.Reference, "status", stkResponse.Status)
@@ -278,6 +276,59 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	}
 	
 	return nil
+}
+
+// clearCachedToken clears the cached OAuth token to force refresh
+func (c *Client) clearCachedToken() {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	// Only clear if using OAuth (not static token from env)
+	if c.clientID != "" && c.clientSecret != "" {
+		c.accessToken = ""
+		c.tokenExpiry = time.Time{}
+	}
+}
+
+// getAccessTokenWithRefresh gets a valid token, forcing refresh if close to expiry
+func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) {
+	c.tokenMu.Lock()
+	
+	// Check if we have OAuth credentials
+	hasOAuth := c.clientID != "" && c.clientSecret != ""
+	
+	// If we have a static token and no OAuth credentials, use the static token
+	// But warn if it might be expired (we can't know without trying)
+	staticToken := c.accessToken
+	if !hasOAuth && staticToken != "" {
+		c.tokenMu.Unlock()
+		return staticToken, nil
+	}
+	
+	// If using OAuth, check if token needs refresh (within 10 minutes of expiry for safety)
+	if hasOAuth {
+		if c.accessToken != "" && time.Now().Add(10*time.Minute).Before(c.tokenExpiry) {
+			token := c.accessToken
+			c.tokenMu.Unlock()
+			return token, nil
+		}
+	}
+	c.tokenMu.Unlock()
+	
+	// Fetch new OAuth token
+	if hasOAuth {
+		token, expiresIn, err := c.fetchOAuthToken(ctx)
+		if err != nil {
+			return "", err
+		}
+		c.tokenMu.Lock()
+		c.accessToken = token
+		c.tokenExpiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
+		c.tokenMu.Unlock()
+		slog.Info("OAuth token refreshed", "expires_in_seconds", expiresIn)
+		return token, nil
+	}
+	
+	return "", errors.New("no valid authentication method configured")
 }
 
 // VerifyWebhook verifies the X-KopoKopo-Signature header
@@ -491,26 +542,47 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 	return result, nil
 }
 
-// sanitizePhone converts phone number to Kopo Kopo STK format (254xxxxxxxxx - no + prefix)
-// Kopo Kopo expects the number WITHOUT the + prefix for STK Push to work correctly
-func sanitizePhone(phone string) string {
-	// Remove all spaces and dashes
+// sanitizeAndValidatePhone converts phone number to E.164 format (+254xxxxxxxxx)
+// and validates it's a valid Kenyan mobile number.
+// Kopo Kopo STK Push requires E.164 format with + prefix for proper delivery.
+func sanitizeAndValidatePhone(phone string) (string, error) {
+	// Remove all spaces, dashes, and other common separators
 	phone = strings.ReplaceAll(phone, " ", "")
 	phone = strings.ReplaceAll(phone, "-", "")
+	phone = strings.ReplaceAll(phone, "(", "")
+	phone = strings.ReplaceAll(phone, ")", "")
+	phone = strings.TrimSpace(phone)
 
-	// Remove leading + if present
+	// Remove leading + if present (we'll add it back consistently)
 	phone = strings.TrimPrefix(phone, "+")
 
-	// If starts with 0, replace with 254
+	// Handle different input formats
 	if strings.HasPrefix(phone, "0") {
+		// 07xxxxxxxx or 01xxxxxxxx -> 254xxxxxxxxx
 		phone = "254" + phone[1:]
-	}
-
-	// If doesn't start with 254, add it
-	if !strings.HasPrefix(phone, "254") {
+	} else if !strings.HasPrefix(phone, "254") {
+		// 7xxxxxxxx -> 2547xxxxxxxx
 		phone = "254" + phone
 	}
 
-	// IMPORTANT: Return WITHOUT + prefix (Kopo Kopo STK requirement)
-	return phone
+	// Validate: must be exactly 12 digits (254 + 9 digits)
+	if len(phone) != 12 {
+		return "", fmt.Errorf("invalid phone number length: expected 12 digits (254xxxxxxxxx), got %d", len(phone))
+	}
+
+	// Validate: must be all digits
+	for _, c := range phone {
+		if c < '0' || c > '9' {
+			return "", fmt.Errorf("phone number contains non-numeric characters")
+		}
+	}
+
+	// Validate: must be a valid Kenyan mobile prefix (7xx or 1xx)
+	prefix := phone[3:4]
+	if prefix != "7" && prefix != "1" {
+		return "", fmt.Errorf("invalid Kenyan mobile prefix: must start with 2547 or 2541, got 254%s", prefix)
+	}
+
+	// Return in E.164 format WITH + prefix (required by Kopo Kopo for consistent STK delivery)
+	return "+" + phone, nil
 }
