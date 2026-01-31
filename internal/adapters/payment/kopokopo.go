@@ -324,7 +324,7 @@ func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []
 	return isValid
 }
 
-// PaymentWebhookPayload represents the ACTUAL Kopo Kopo webhook payload format
+// PaymentWebhookPayload represents the buygoods_transaction_received webhook format
 type PaymentWebhookPayload struct {
 	Topic     string    `json:"topic"`      // e.g., "buygoods_transaction_received"
 	ID        string    `json:"id"`
@@ -351,24 +351,115 @@ type PaymentWebhookPayload struct {
 	} `json:"_links"`
 }
 
+// IncomingPaymentWebhook represents the incoming_payment callback format (STK push result)
+type IncomingPaymentWebhook struct {
+	Data struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"` // "incoming_payment"
+		Attributes struct {
+			InitiationTime string `json:"initiation_time"`
+			Status         string `json:"status"` // "Success" or "Failed"
+			Event          struct {
+				Type     string `json:"type"`
+				Resource *struct {
+					ID                string `json:"id"`
+					Amount            string `json:"amount"`
+					Status            string `json:"status"`
+					System            string `json:"system"`
+					Currency          string `json:"currency"`
+					Reference         string `json:"reference"`
+					TillNumber        string `json:"till_number"`
+					SenderPhoneNumber string `json:"sender_phone_number"`
+					OriginationTime   string `json:"origination_time"`
+				} `json:"resource"`
+				Errors interface{} `json:"errors"` // Can be string or null
+			} `json:"event"`
+			Metadata struct {
+				OrderID string `json:"order_id"`
+			} `json:"metadata"`
+			Links struct {
+				CallbackURL string `json:"callback_url"`
+				Self        string `json:"self"`
+			} `json:"_links"`
+		} `json:"attributes"`
+	} `json:"data"`
+}
+
 // ProcessWebhook processes the payment webhook and extracts order information
+// Handles both buygoods_transaction_received and incoming_payment formats
 func (c *Client) ProcessWebhook(ctx context.Context, payload []byte) (*core.PaymentWebhook, error) {
 	// Debug: Log raw payload
 	fmt.Printf("[DEBUG] Raw webhook payload: %s\n", string(payload))
 	
-	var webhook PaymentWebhookPayload
-	if err := json.Unmarshal(payload, &webhook); err != nil {
+	// Try to detect which format this is by checking for "data" or "topic" field
+	var detector map[string]interface{}
+	if err := json.Unmarshal(payload, &detector); err != nil {
 		return nil, fmt.Errorf("failed to parse webhook payload: %w", err)
 	}
 	
+	// Check if this is an incoming_payment webhook (has "data" field)
+	if _, hasData := detector["data"]; hasData {
+		return c.processIncomingPaymentWebhook(payload)
+	}
+	
+	// Otherwise, try buygoods_transaction_received format
+	return c.processBuygoodsWebhook(payload)
+}
+
+// processIncomingPaymentWebhook handles the STK push callback format
+func (c *Client) processIncomingPaymentWebhook(payload []byte) (*core.PaymentWebhook, error) {
+	var webhook IncomingPaymentWebhook
+	if err := json.Unmarshal(payload, &webhook); err != nil {
+		return nil, fmt.Errorf("failed to parse incoming_payment webhook: %w", err)
+	}
+	
+	attrs := webhook.Data.Attributes
+	
+	// Debug log
+	fmt.Printf("[DEBUG] Incoming Payment webhook - Type: %s, Status: %s, OrderID: %s\n",
+		webhook.Data.Type, attrs.Status, attrs.Metadata.OrderID)
+	
+	// Check if payment was successful
+	isSuccess := strings.ToLower(attrs.Status) == "success"
+	
+	result := &core.PaymentWebhook{
+		OrderID: attrs.Metadata.OrderID, // We have the order ID directly!
+		Status:  attrs.Status,
+		Success: isSuccess,
+	}
+	
+	// Extract phone and amount from event.resource if available
+	if attrs.Event.Resource != nil {
+		result.Phone = attrs.Event.Resource.SenderPhoneNumber
+		result.Reference = attrs.Event.Resource.Reference
+		
+		if attrs.Event.Resource.Amount != "" {
+			var amount float64
+			if _, err := fmt.Sscanf(attrs.Event.Resource.Amount, "%f", &amount); err == nil {
+				result.Amount = amount
+			}
+		}
+		
+		fmt.Printf("[DEBUG] Incoming Payment - Phone: %s, Amount: %.0f, Reference: %s\n",
+			result.Phone, result.Amount, result.Reference)
+	}
+	
+	return result, nil
+}
+
+// processBuygoodsWebhook handles the buygoods_transaction_received format
+func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, error) {
+	var webhook PaymentWebhookPayload
+	if err := json.Unmarshal(payload, &webhook); err != nil {
+		return nil, fmt.Errorf("failed to parse buygoods webhook: %w", err)
+	}
+	
 	// Debug: Log parsed webhook structure
-	fmt.Printf("[DEBUG] Parsed webhook - Topic: %s, Status: %s, Phone: %s, Amount: %s, Reference: %s\n",
+	fmt.Printf("[DEBUG] Buygoods webhook - Topic: %s, Status: %s, Phone: %s, Amount: %s, Reference: %s\n",
 		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber, 
 		webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction
-	// Kopo Kopo uses topic like "buygoods_transaction_received"
-	// and status like "Success" or "Received"
 	isSuccess := (webhook.Topic == "buygoods_transaction_received" || 
 	              strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
 	             (webhook.Event.Resource.Status == "Success" || 

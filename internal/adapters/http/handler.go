@@ -268,8 +268,18 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 		var order *core.Order
 		var err error
 		
-		// Try to match order by phone and amount (robust strategy)
-		if result.Phone != "" && result.Amount > 0 {
+		// Strategy 1: Use OrderID if available (from incoming_payment webhook)
+		if result.OrderID != "" {
+			order, err = h.orderRepo.GetByID(ctx, result.OrderID)
+			if err != nil {
+				fmt.Printf("Error finding order by ID %s: %v\n", result.OrderID, err)
+			} else if order != nil {
+				fmt.Printf("[DEBUG] Found order by ID: %s (status: %s)\n", order.ID, order.Status)
+			}
+		}
+		
+		// Strategy 2: Fallback to phone + amount matching
+		if order == nil && result.Phone != "" && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
 			if err != nil {
 				fmt.Printf("Error finding order by phone+amount: %v\n", err)
@@ -279,6 +289,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 		// If no order found, log as orphaned payment
 		if order == nil {
 			slog.Warn("Orphaned Payment Received - No matching order found",
+				"order_id", result.OrderID,
 				"amount", result.Amount,
 				"phone", result.Phone,
 				"reference", result.Reference,
@@ -320,22 +331,39 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 		}
 	} else {
 		// Payment failed or cancelled
-		// Try to find order and update to FAILED
-		if result.Phone != "" && result.Amount > 0 {
-			order, err := h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
-			if err == nil && order != nil {
-				if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusFailed); err != nil {
-					fmt.Printf("Error updating order status to FAILED: %v\n", err)
-				} else {
-					// Optionally notify customer of payment failure
-					message := fmt.Sprintf("❌ Payment failed for order #%s. Please try again by sending 'hi' to restart.",
-						order.ID[:8])
-					go func(phone, msg string) {
-						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
-							fmt.Printf("Error sending payment failure notification: %v\n", err)
-						}
-					}(order.CustomerPhone, message)
-				}
+		fmt.Printf("[DEBUG] Payment failed/cancelled - OrderID: %s, Status: %s\n", result.OrderID, result.Status)
+		
+		var order *core.Order
+		var err error
+		
+		// Try to find order by ID first (from incoming_payment webhook)
+		if result.OrderID != "" {
+			order, err = h.orderRepo.GetByID(ctx, result.OrderID)
+			if err != nil {
+				fmt.Printf("Error finding failed order by ID: %v\n", err)
+			}
+		}
+		
+		// Fallback to phone + amount matching
+		if order == nil && result.Phone != "" && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding failed order by phone+amount: %v\n", err)
+			}
+		}
+		
+		if order != nil {
+			if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusFailed); err != nil {
+				fmt.Printf("Error updating order status to FAILED: %v\n", err)
+			} else {
+				// Notify customer of payment failure
+				message := fmt.Sprintf("❌ Payment failed for order #%s. Please try again by sending 'hi' to restart.",
+					order.ID[:8])
+				go func(phone, msg string) {
+					if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
+						fmt.Printf("Error sending payment failure notification: %v\n", err)
+					}
+				}(order.CustomerPhone, message)
 			}
 		}
 	}
