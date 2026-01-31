@@ -286,19 +286,37 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			}
 		}
 		
-		// If no order found, log as orphaned payment
+		// If no order found, log as orphaned payment (only if we had identifiers)
 		if order == nil {
-			slog.Warn("Orphaned Payment Received - No matching order found",
-				"order_id", result.OrderID,
-				"amount", result.Amount,
-				"phone", result.Phone,
-				"reference", result.Reference,
-				"status", result.Status)
+			if result.OrderID != "" || result.Phone != "" {
+				slog.Warn("Orphaned Payment Received - No matching order found",
+					"order_id", result.OrderID,
+					"amount", result.Amount,
+					"phone", result.Phone,
+					"reference", result.Reference,
+					"status", result.Status)
+			} else {
+				slog.Info("Payment webhook received without identifiers",
+					"amount", result.Amount,
+					"reference", result.Reference,
+					"status", result.Status)
+			}
 			
 			// Return 200 OK anyway (don't fail the webhook)
 			return c.Status(http.StatusOK).JSON(fiber.Map{
 				"status": "ok",
 				"note":   "payment received but no matching order",
+			})
+		}
+
+		// If already paid/completed, skip duplicate confirmation
+		if order.Status == core.OrderStatusPaid || order.Status == core.OrderStatusCompleted {
+			slog.Info("Payment webhook already processed for order",
+				"order_id", order.ID,
+				"status", order.Status)
+			return c.Status(http.StatusOK).JSON(fiber.Map{
+				"status": "ok",
+				"note":   "payment already processed",
 			})
 		}
 		

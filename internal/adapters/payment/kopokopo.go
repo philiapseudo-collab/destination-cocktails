@@ -460,11 +460,17 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 		webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction
-	isSuccess := (webhook.Topic == "buygoods_transaction_received" || 
-	              strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
-	             (webhook.Event.Resource.Status == "Success" || 
-	              webhook.Event.Resource.Status == "Received" ||
-	              strings.ToLower(webhook.Event.Resource.Status) == "success")
+	isSuccess := (webhook.Topic == "buygoods_transaction_received" ||
+		strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
+		(webhook.Event.Resource.Status == "Success" ||
+			webhook.Event.Resource.Status == "Received" ||
+			strings.ToLower(webhook.Event.Resource.Status) == "success")
+
+	// If no sender phone is provided, we can't match to an order reliably.
+	// Treat as informational only and avoid triggering orphaned warnings downstream.
+	if strings.TrimSpace(webhook.Event.Resource.SenderPhoneNumber) == "" {
+		isSuccess = false
+	}
 
 	result := &core.PaymentWebhook{
 		OrderID:   "", // Will be matched in handler using phone + amount
