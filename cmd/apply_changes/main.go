@@ -26,7 +26,7 @@ type MenuItem struct {
 
 // MenuData holds the Chasers products to be seeded
 var ChasersData = []byte(`[
-  { "name": "Ice Cubes (Packet)", "price": 200, "category": "Chasers", "stock": 100 },
+  { "name": "Ice Cubes (Packet)", "price": 20, "category": "Chasers", "stock": 100 },
   { "name": "Coca-Cola (Soda)", "price": 150, "category": "Chasers", "stock": 100 },
   { "name": "Fanta Orange (Soda)", "price": 150, "category": "Chasers", "stock": 100 },
   { "name": "Fanta Blackcurrant (Soda)", "price": 150, "category": "Chasers", "stock": 100 },
@@ -37,7 +37,7 @@ var ChasersData = []byte(`[
   { "name": "Schweppes Tonic Water", "price": 200, "category": "Chasers", "stock": 100 },
   { "name": "Power Play (Energy Drink)", "price": 250, "category": "Chasers", "stock": 100 },
   { "name": "Red Bull (Energy Drink)", "price": 300, "category": "Chasers", "stock": 100 },
-  { "name": "Water (500ml)", "price": 100, "category": "Chasers", "stock": 100 }
+  { "name": "Water (500ml)", "price": 50, "category": "Chasers", "stock": 100 }
 ]`)
 
 func main() {
