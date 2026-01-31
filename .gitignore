@@ -1,5 +1,5 @@
 # Binaries
-server
+/server
 server.exe
 *.exe
 *.dll
