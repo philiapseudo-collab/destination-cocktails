@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -38,6 +39,7 @@ type PaymentGatewayHandler interface {
 type OrderRepositoryHandler interface {
 	UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error
 	GetByID(ctx context.Context, id string) (*core.Order, error)
+	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*core.Order, error)
 }
 
 // WhatsAppGatewayHandler defines the interface for WhatsApp gateway
@@ -262,49 +264,72 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 	}
 
 	// Handle payment status
-	if result.OrderID != "" {
-		if result.Success {
-			// Update order status to PAID
-			if err := h.orderRepo.UpdateStatus(ctx, result.OrderID, core.OrderStatusPaid); err != nil {
-				// Log error but don't fail the webhook (idempotency)
-				fmt.Printf("Error updating order status: %v\n", err)
-			} else {
-				// Get order to find customer phone and details
-				order, err := h.orderRepo.GetByID(ctx, result.OrderID)
-				if err == nil && order != nil {
-					// Send WhatsApp notification to customer with pickup code
-					message := fmt.Sprintf("✅ *Payment Received!*\n\n"+
-						"Your order has been confirmed 🍹\n\n"+
-						"*Pickup Code:* %s\n"+
-						"*Total:* KES %.0f\n\n"+
-						"Show this code to the bartender when collecting your drinks!\n\n"+
-						"_Type 'Menu' to order more._",
-						order.PickupCode, order.TotalAmount)
-					go func(phone, msg string) {
-						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
-							fmt.Printf("Error sending payment confirmation: %v\n", err)
-						}
-					}(order.CustomerPhone, message)
-
-					// Send notification to bar staff
-					go h.notifyBarStaff(ctx, order)
-
-					// Emit new_order event for dashboard SSE
-					if h.eventBus != nil {
-						h.eventBus.PublishNewOrder(order)
-					}
-				}
+	if result.Success {
+		var order *core.Order
+		var err error
+		
+		// Try to match order by phone and amount (robust strategy)
+		if result.Phone != "" && result.Amount > 0 {
+			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
+			if err != nil {
+				fmt.Printf("Error finding order by phone+amount: %v\n", err)
 			}
+		}
+		
+		// If no order found, log as orphaned payment
+		if order == nil {
+			slog.Warn("Orphaned Payment Received - No matching order found",
+				"amount", result.Amount,
+				"phone", result.Phone,
+				"reference", result.Reference,
+				"status", result.Status)
+			
+			// Return 200 OK anyway (don't fail the webhook)
+			return c.Status(http.StatusOK).JSON(fiber.Map{
+				"status": "ok",
+				"note":   "payment received but no matching order",
+			})
+		}
+		
+		// Update order status to PAID
+		if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusPaid); err != nil {
+			// Log error but don't fail the webhook (idempotency)
+			fmt.Printf("Error updating order status: %v\n", err)
 		} else {
-			// Payment failed or cancelled - update order status to FAILED
-			if err := h.orderRepo.UpdateStatus(ctx, result.OrderID, core.OrderStatusFailed); err != nil {
-				fmt.Printf("Error updating order status to FAILED: %v\n", err)
-			} else {
-				// Optionally notify customer of payment failure
-				order, err := h.orderRepo.GetByID(ctx, result.OrderID)
-				if err == nil && order != nil {
+			// Send WhatsApp notification to customer with pickup code
+			message := fmt.Sprintf("✅ *Payment Received!*\n\n"+
+				"Your order has been confirmed 🍹\n\n"+
+				"*Pickup Code:* %s\n"+
+				"*Total:* KES %.0f\n\n"+
+				"Show this code to the bartender when collecting your drinks!\n\n"+
+				"_Type 'Menu' to order more._",
+				order.PickupCode, order.TotalAmount)
+			go func(phone, msg string) {
+				if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
+					fmt.Printf("Error sending payment confirmation: %v\n", err)
+				}
+			}(order.CustomerPhone, message)
+
+			// Send notification to bar staff
+			go h.notifyBarStaff(ctx, order)
+
+			// Emit new_order event for dashboard SSE
+			if h.eventBus != nil {
+				h.eventBus.PublishNewOrder(order)
+			}
+		}
+	} else {
+		// Payment failed or cancelled
+		// Try to find order and update to FAILED
+		if result.Phone != "" && result.Amount > 0 {
+			order, err := h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
+			if err == nil && order != nil {
+				if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusFailed); err != nil {
+					fmt.Printf("Error updating order status to FAILED: %v\n", err)
+				} else {
+					// Optionally notify customer of payment failure
 					message := fmt.Sprintf("❌ Payment failed for order #%s. Please try again by sending 'hi' to restart.",
-						result.OrderID[:8])
+						order.ID[:8])
 					go func(phone, msg string) {
 						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
 							fmt.Printf("Error sending payment failure notification: %v\n", err)

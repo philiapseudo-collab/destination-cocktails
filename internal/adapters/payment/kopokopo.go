@@ -300,18 +300,31 @@ func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []
 	return hmac.Equal(expectedSig, computedSig)
 }
 
-// PaymentWebhookPayload represents the Kopo Kopo webhook payload
+// PaymentWebhookPayload represents the ACTUAL Kopo Kopo webhook payload format
 type PaymentWebhookPayload struct {
-	EventType string `json:"event_type"`
-	Resource  struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		Reference   string `json:"reference"`
-		Amount      string `json:"amount"`
-		Metadata    struct {
-			OrderID string `json:"order_id"`
-		} `json:"metadata"`
-	} `json:"resource"`
+	Topic     string    `json:"topic"`      // e.g., "buygoods_transaction_received"
+	ID        string    `json:"id"`
+	CreatedAt string    `json:"created_at"`
+	Event     struct {
+		Type     string `json:"type"`
+		Resource struct {
+			ID                 string  `json:"id"`
+			Amount             string  `json:"amount"`
+			Status             string  `json:"status"`
+			System             string  `json:"system"`
+			Currency           string  `json:"currency"`
+			Reference          string  `json:"reference"`
+			TillNumber         string  `json:"till_number"`
+			SenderPhoneNumber  string  `json:"sender_phone_number"`
+			OriginationTime    string  `json:"origination_time"`
+			SenderFirstName    string  `json:"sender_first_name"`
+			SenderLastName     string  `json:"sender_last_name"`
+		} `json:"resource"`
+	} `json:"event"`
+	Links struct {
+		Self     string `json:"self"`
+		Resource string `json:"resource"`
+	} `json:"_links"`
 }
 
 // ProcessWebhook processes the payment webhook and extracts order information
@@ -322,25 +335,26 @@ func (c *Client) ProcessWebhook(ctx context.Context, payload []byte) (*core.Paym
 	}
 
 	// Check if this is a successful transaction
-	// Kopo Kopo uses event_type like "buygoods_transaction_received" or similar
+	// Kopo Kopo uses topic like "buygoods_transaction_received"
 	// and status like "Success" or "Received"
-	isSuccess := (webhook.EventType == "buygoods_transaction_received" || 
-	              strings.Contains(strings.ToLower(webhook.EventType), "transaction")) &&
-	             (webhook.Resource.Status == "Success" || 
-	              webhook.Resource.Status == "Received" ||
-	              strings.ToLower(webhook.Resource.Status) == "success")
+	isSuccess := (webhook.Topic == "buygoods_transaction_received" || 
+	              strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
+	             (webhook.Event.Resource.Status == "Success" || 
+	              webhook.Event.Resource.Status == "Received" ||
+	              strings.ToLower(webhook.Event.Resource.Status) == "success")
 
 	result := &core.PaymentWebhook{
-		OrderID:   webhook.Resource.Metadata.OrderID,
-		Status:    webhook.Resource.Status,
-		Reference: webhook.Resource.Reference,
+		OrderID:   "", // Will be matched in handler using phone + amount
+		Status:    webhook.Event.Resource.Status,
+		Reference: webhook.Event.Resource.Reference,
+		Phone:     webhook.Event.Resource.SenderPhoneNumber,
 		Success:   isSuccess,
 	}
 
 	// Parse amount if available
-	if webhook.Resource.Amount != "" {
+	if webhook.Event.Resource.Amount != "" {
 		var amount float64
-		if _, err := fmt.Sscanf(webhook.Resource.Amount, "%f", &amount); err == nil {
+		if _, err := fmt.Sscanf(webhook.Event.Resource.Amount, "%f", &amount); err == nil {
 			result.Amount = amount
 		}
 	}

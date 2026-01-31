@@ -410,6 +410,56 @@ func (r *orderRepository) GetAllWithFilters(ctx context.Context, status string, 
 	return orders, nil
 }
 
+// FindPendingByPhoneAndAmount finds the most recent pending order matching phone and amount
+// Uses hybrid phone matching: exact match first, then last 9 digits
+func (r *orderRepository) FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*core.Order, error) {
+	// Normalize phone: extract last 9 digits for fallback matching
+	phoneDigits := extractLast9Digits(phone)
+	
+	var orderModel OrderModel
+	// Try exact match first, then fallback to last 9 digits match
+	err := r.db.WithContext(ctx).Table("orders").
+		Where("status = ? AND total_amount = ? AND (customer_phone = ? OR customer_phone LIKE ?)", 
+			"PENDING", amount, phone, "%"+phoneDigits).
+		Order("created_at DESC").
+		First(&orderModel).Error
+	
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // No matching order found (not an error)
+		}
+		return nil, fmt.Errorf("failed to find pending order: %w", err)
+	}
+
+	// Get order items with product names
+	items, err := r.fetchOrderItemsWithProductNames(ctx, orderModel.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	order := orderModel.ToDomain()
+	order.Items = items
+
+	return order, nil
+}
+
+// extractLast9Digits extracts the last 9 digits from a phone number
+// Handles formats like: 0712345678, +254712345678, 254712345678
+func extractLast9Digits(phone string) string {
+	// Remove all non-digit characters
+	digits := ""
+	for _, char := range phone {
+		if char >= '0' && char <= '9' {
+			digits += string(char)
+		}
+	}
+	// Return last 9 digits
+	if len(digits) >= 9 {
+		return digits[len(digits)-9:]
+	}
+	return digits
+}
+
 // Database Models (with GORM tags)
 
 // ProductModel represents the product table structure

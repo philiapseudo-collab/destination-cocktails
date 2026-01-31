@@ -21,6 +21,7 @@ type OrderRepository interface {
 	GetByPhone(ctx context.Context, phone string) ([]*Order, error)
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
+	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*Order, error)
 }
 
 // UserRepository defines the interface for user data access
@@ -67,6 +68,7 @@ type PaymentWebhook struct {
 	Status    string
 	Reference string
 	Amount    float64
+	Phone     string  // Sender phone number from webhook
 	Success   bool
 }
 

@@ -45,7 +45,7 @@ type Config struct {
 	KopoKopoBaseURL         string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
 	KopoKopoTillNumber      string `envconfig:"KOPOKOPO_TILL_NUMBER"`
 	KopoKopoAccessToken     string `envconfig:"KOPOKOPO_ACCESS_TOKEN"`      // Optional: manual token (e.g. sandbox); else we use Client ID/Secret OAuth
-	KopoKopoCallbackURL     string `envconfig:"KOPOKOPO_CALLBACK_URL"`      // Full callback URL (e.g., https://your-app.railway.app/api/webhooks/kopokopo)
+	KopoKopoCallbackURL     string `envconfig:"KOPOKOPO_CALLBACK_URL"`      // Full callback URL (e.g., https://your-app.railway.app/api/webhooks/payment)
 
 	// Pesapal
 	PesapalClientID     string `envconfig:"PESAPAL_CLIENT_ID"`
