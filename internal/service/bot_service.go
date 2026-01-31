@@ -50,7 +50,7 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 
 	// Global Reset Check: Check for reset keywords before processing state
 	normalizedMessage := strings.ToLower(strings.TrimSpace(message))
-	resetKeywords := []string{"hi", "hello", "start", "restart", "reset", "menu"}
+	resetKeywords := []string{"hi", "hello", "start", "restart", "reset", "menu", "0"}
 
 	for _, keyword := range resetKeywords {
 		if normalizedMessage == keyword {
@@ -67,8 +67,8 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 				return fmt.Errorf("failed to reset session: %w", err)
 			}
 
-			// Call handleStart to send welcome message and return early
-			return b.handleStart(ctx, phone, newSession, message)
+			// Call handleStart with empty string to show welcome (not search)
+			return b.handleStart(ctx, phone, newSession, "")
 		}
 	}
 
@@ -110,6 +110,35 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 // handleStart handles the START state - sends welcome message or processes search
 func (b *BotService) handleStart(ctx context.Context, phone string, session *core.Session, message string) error {
 	messageLower := strings.ToLower(strings.TrimSpace(message))
+
+	// If message is empty (from reset command), show welcome with categories
+	if messageLower == "" {
+		// Get menu (grouped by category)
+		menu, err := b.Repo.GetMenu(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get menu: %w", err)
+		}
+
+		// Extract category names
+		categories := make([]string, 0, len(menu))
+		for category := range menu {
+			categories = append(categories, category)
+		}
+
+		// Limit to 10 categories (WhatsApp list limit)
+		if len(categories) > 10 {
+			categories = categories[:10]
+		}
+
+		// Send category list directly
+		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
+			return fmt.Errorf("failed to send categories: %w", err)
+		}
+
+		// Set state to BROWSING
+		session.State = "BROWSING"
+		return b.Session.Set(ctx, phone, session, 7200)
+	}
 
 	// If message is "order_drinks" button or contains "order", DIRECTLY show menu
 	if messageLower == "order_drinks" || messageLower == "order drinks" || strings.Contains(messageLower, "order") {

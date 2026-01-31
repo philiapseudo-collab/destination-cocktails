@@ -277,7 +277,8 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 						"Your order has been confirmed 🍹\n\n"+
 						"*Pickup Code:* %s\n"+
 						"*Total:* KES %.0f\n\n"+
-						"Show this code to the bartender when collecting your drinks!",
+						"Show this code to the bartender when collecting your drinks!\n\n"+
+						"_Type 'Menu' to order more._",
 						order.PickupCode, order.TotalAmount)
 					go func(phone, msg string) {
 						if err := h.whatsappGateway.SendText(ctx, phone, msg); err != nil {
