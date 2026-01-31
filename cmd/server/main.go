@@ -57,8 +57,8 @@ func main() {
 
 	// Initialize WhatsApp client
 	whatsappClient := whatsapp.NewClient(
-		cfg.WhatsAppToken,
 		cfg.WhatsAppPhoneNumberID,
+		cfg.WhatsAppToken,
 	)
 	log.Println("✓ WhatsApp client initialized")
 
