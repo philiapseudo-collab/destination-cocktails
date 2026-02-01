@@ -351,6 +351,9 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			// Log error but don't fail the webhook (idempotency)
 			fmt.Printf("Error updating order status: %v\n", err)
 		} else {
+			// Reflect PAID in-memory so notifyBarStaff and SSE receive correct status
+			order.Status = core.OrderStatusPaid
+
 			// Send WhatsApp notification to customer with pickup code
 			message := fmt.Sprintf("✅ *Payment Received!*\n\n"+
 				"Your order has been confirmed 🍹\n\n"+
@@ -365,7 +368,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				}
 			}(order.CustomerPhone, message)
 
-			// Send notification to bar staff
+			// Send notification to bar staff (only when order is PAID)
 			go h.notifyBarStaff(ctx, order)
 
 			// Emit new_order event for dashboard SSE
@@ -442,8 +445,15 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 	})
 }
 
-// notifyBarStaff sends a WhatsApp notification to bar staff with order details
+// notifyBarStaff sends a WhatsApp notification to bar staff with order details.
+// CRITICAL: Only notifies when order is PAID (payment confirmed). Never notify for PENDING orders.
 func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
+	if order.Status != core.OrderStatusPaid && order.Status != core.OrderStatusCompleted {
+		log.Printf("[SAFETY] Skipping bar staff notification: order %s has status %s (only PAID/COMPLETED get delivery message)",
+			order.ID, order.Status)
+		return
+	}
+
 	cfg := config.Get()
 	barStaffPhone := cfg.BarStaffPhone
 

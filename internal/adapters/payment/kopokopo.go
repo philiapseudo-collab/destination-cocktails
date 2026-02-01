@@ -519,13 +519,13 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber, 
 		webhook.Event.Resource.HashedSenderPhone, webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
-	// Check if this is a successful transaction
-	// Note: Buygoods webhooks may not include sender_phone_number (only hashed_sender_phone)
-	// So we determine success based on topic and status only
+	// Check if this is a successful transaction.
+	// CRITICAL: Only treat "Success" as success. Do NOT treat "Received" as success:
+	// "Received" means the gateway received the transaction (e.g. pending customer PIN);
+	// notifying bar staff here would send "Mark Done" before payment is complete.
 	isSuccess := (webhook.Topic == "buygoods_transaction_received" ||
 		strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
 		(webhook.Event.Resource.Status == "Success" ||
-			webhook.Event.Resource.Status == "Received" ||
 			strings.ToLower(webhook.Event.Resource.Status) == "success")
 
 	result := &core.PaymentWebhook{
