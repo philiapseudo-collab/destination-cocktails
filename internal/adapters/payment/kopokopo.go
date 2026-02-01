@@ -239,12 +239,14 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	amountStr := fmt.Sprintf("%.0f", amount)
 
 	// Build request payload (Kopo Kopo incoming_payments format)
-	// Include subscriber first_name to help M-Pesa validate the request
+	// Use minimal values (".") for optional name fields to reduce SIM Toolkit payload size
+	// This helps prevent processing issues on older SIMs and iPhones
 	payload := STKPushRequest{
 		PaymentChannel: "M-PESA STK Push",
 		TillNumber:     c.tillNumber,
 	}
-	payload.Subscriber.FirstName = "Customer" // Generic name helps with M-Pesa validation
+	payload.Subscriber.FirstName = "." // Minimal value - reduces SIM command bytes
+	payload.Subscriber.LastName = "."  // Minimal value - reduces SIM command bytes
 	payload.Subscriber.PhoneNumber = phone
 	payload.Amount.Currency = "KES"
 	payload.Amount.Value = amountStr

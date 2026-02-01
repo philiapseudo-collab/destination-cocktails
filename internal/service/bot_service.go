@@ -751,6 +751,11 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 		return fmt.Errorf("failed to initiate STK push: %w", err)
 	}
 
+	// COURTESY DELAY: Wait 3 seconds before sending WhatsApp message
+	// This gives iPhone time to render the M-Pesa STK popup before the WhatsApp
+	// notification banner appears, preventing iOS UI thread collision/freeze
+	time.Sleep(3 * time.Second)
+
 	// Send confirmation message with the phone number being charged
 	cartSummary := "📦 Order Summary:\n\n"
 	for _, item := range session.Cart {
