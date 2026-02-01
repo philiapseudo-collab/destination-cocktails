@@ -25,10 +25,10 @@ type BotService struct {
 // State constants
 const (
 	StateStart                  = "START"
-	StateBrowsing              = "BROWSING"
-	StateSelectingProduct      = "SELECTING_PRODUCT"
-	StateQuantity              = "QUANTITY"
-	StateConfirmOrder          = "CONFIRM_ORDER"
+	StateBrowsing               = "BROWSING"
+	StateSelectingProduct       = "SELECTING_PRODUCT"
+	StateQuantity               = "QUANTITY"
+	StateConfirmOrder           = "CONFIRM_ORDER"
 	StateWaitingForPaymentPhone = "WAITING_FOR_PAYMENT_PHONE"
 )
 
@@ -183,7 +183,7 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 
 	// Otherwise, treat the message as a search query
 	searchQuery := strings.TrimSpace(message)
-	
+
 	// Improved search: allow partial matches, handle multiple words
 	products, err := b.Repo.SearchProducts(ctx, searchQuery)
 	if err != nil {
@@ -569,12 +569,12 @@ func (b *BotService) handleConfirmOrder(ctx context.Context, phone string, sessi
 	if messageLower == "checkout" || strings.Contains(messageLower, "checkout") {
 		return b.handleCheckout(ctx, phone, session)
 	}
-	
+
 	// Handle payment confirmation buttons (pay_self, pay_other)
 	if messageLower == "pay_self" {
 		return b.handlePaySelf(ctx, phone, session)
 	}
-	
+
 	if messageLower == "pay_other" {
 		return b.handlePayOther(ctx, phone, session)
 	}
@@ -606,6 +606,25 @@ func (b *BotService) handleCheckout(ctx context.Context, phone string, session *
 		return b.WhatsApp.SendText(ctx, phone, "Your cart is empty. Please add items first.")
 	}
 
+	// DUPLICATE CHECKOUT PREVENTION: Check if user has a pending order
+	if session.PendingOrderID != "" {
+		// Check if the order is still pending
+		order, err := b.OrderRepo.GetByID(ctx, session.PendingOrderID)
+		if err == nil && order != nil && order.Status == core.OrderStatusPending {
+			// Order still pending - show helpful message with retry option
+			msg := "⏳ *Payment Already Pending*\n\n" +
+				"An M-Pesa prompt was already sent for your order.\n\n" +
+				"*What to do:*\n" +
+				"1. Check your phone for the M-Pesa prompt\n" +
+				"2. Enter your PIN to complete payment\n" +
+				"3. If you missed it, wait 30 seconds then try again\n\n" +
+				"_If the prompt expired, type 'hi' to start fresh._"
+			return b.WhatsApp.SendText(ctx, phone, msg)
+		}
+		// Order is no longer pending (paid, failed, or cancelled) - clear and continue
+		session.PendingOrderID = ""
+	}
+
 	// Calculate total
 	total := 0.0
 	for _, item := range session.Cart {
@@ -614,7 +633,7 @@ func (b *BotService) handleCheckout(ctx context.Context, phone string, session *
 
 	// Send button prompt asking which number to charge
 	promptMsg := fmt.Sprintf("Your total is *KES %.0f*.\n\nWhich M-Pesa number should we charge?", total)
-	
+
 	buttons := []core.Button{
 		{
 			ID:    "pay_self",
@@ -644,7 +663,7 @@ func (b *BotService) handlePaySelf(ctx context.Context, phone string, session *c
 func (b *BotService) handlePayOther(ctx context.Context, phone string, session *core.Session) error {
 	// Prompt for phone number
 	promptMsg := "Please type the Safaricom M-Pesa number you want to use (e.g., 0712345678)."
-	
+
 	if err := b.WhatsApp.SendText(ctx, phone, promptMsg); err != nil {
 		return fmt.Errorf("failed to send phone prompt: %w", err)
 	}
@@ -706,7 +725,7 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 		ID:            orderID,
 		UserID:        user.ID,
 		CustomerPhone: paymentPhone, // Use payment phone for webhook matching
-		TableNumber:   "",            // TODO: Ask for table number or get from session
+		TableNumber:   "",           // TODO: Ask for table number or get from session
 		TotalAmount:   total,
 		Status:        core.OrderStatusPending,
 		PaymentMethod: string(core.PaymentMethodMpesa),
@@ -719,11 +738,16 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 		return fmt.Errorf("failed to create order: %w", err)
 	}
 
+	// CRITICAL: Store pending order ID in session for duplicate checkout prevention
+	session.PendingOrderID = orderID
+
 	// Initiate STK Push to the payment phone
 	err = b.Payment.InitiateSTKPush(ctx, orderID, paymentPhone, total)
 	if err != nil {
-		// If queueing fails (system busy), update order status to FAILED
+		// If queueing fails (system busy), update order status to FAILED and clear pending ID
 		b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
+		session.PendingOrderID = ""
+		b.Session.Set(ctx, whatsappPhone, session, 7200)
 		return fmt.Errorf("failed to initiate STK push: %w", err)
 	}
 
@@ -740,7 +764,7 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 		return fmt.Errorf("failed to send confirmation: %w", err)
 	}
 
-	// Clear cart and reset state
+	// Clear cart and reset state, but KEEP PendingOrderID until payment is processed
 	session.Cart = []core.CartItem{}
 	session.State = "START"
 	return b.Session.Set(ctx, whatsappPhone, session, 7200)
@@ -753,10 +777,10 @@ func normalizePhone(phone string) (string, error) {
 	phone = strings.ReplaceAll(phone, " ", "")
 	phone = strings.ReplaceAll(phone, "-", "")
 	phone = strings.TrimSpace(phone)
-	
+
 	// Remove leading +
 	phone = strings.TrimPrefix(phone, "+")
-	
+
 	// Handle different formats
 	if strings.HasPrefix(phone, "254") {
 		// Already in 254xxxxxxxxx format
@@ -777,7 +801,7 @@ func normalizePhone(phone string) (string, error) {
 		}
 		return "", fmt.Errorf("invalid phone number format")
 	}
-	
+
 	return "", fmt.Errorf("unsupported phone number format")
 }
 

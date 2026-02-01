@@ -74,6 +74,7 @@ type Session struct {
 	CurrentCategory  string     `json:"current_category"`   // Current category being browsed
 	CurrentProductID string     `json:"current_product_id"` // Product being selected
 	Cart             []CartItem `json:"cart"`               // Array of cart items
+	PendingOrderID   string     `json:"pending_order_id"`   // Order ID with pending payment (prevents duplicate checkout)
 }
 
 // CartItem represents an item in the user's shopping cart

@@ -30,19 +30,22 @@ type stkPayload struct {
 
 // Client handles Kopo Kopo payment operations with rate limiting
 type Client struct {
-	baseURL         string
-	webhookSecret   string
-	tillNumber      string
-	callbackURL     string
-	httpClient      *http.Client
+	baseURL       string
+	webhookSecret string
+	tillNumber    string
+	callbackURL   string
+	httpClient    *http.Client
 	// OAuth: used when KOPOKOPO_ACCESS_TOKEN is not set
-	clientID        string
-	clientSecret    string
-	accessToken     string
-	tokenExpiry     time.Time
-	tokenMu         sync.Mutex
+	clientID     string
+	clientSecret string
+	accessToken  string
+	tokenExpiry  time.Time
+	tokenMu      sync.Mutex
 	// Rate limiting: queue + worker
-	requestQueue    chan stkPayload
+	requestQueue chan stkPayload
+	// In-flight request tracking: prevents duplicate STK pushes for same phone
+	inFlightMu     sync.RWMutex
+	inFlightPhones map[string]time.Time // phone -> timestamp when request was sent
 }
 
 // tokenResponse is the OAuth client_credentials token response
@@ -58,22 +61,23 @@ type tokenResponse struct {
 func NewClient() (*Client, error) {
 	cfg := config.Get()
 	c := &Client{
-		baseURL:       cfg.KopoKopoBaseURL,
-		webhookSecret: cfg.KopoKopoWebhookSecret,
-		tillNumber:    cfg.KopoKopoTillNumber,
-		callbackURL:   cfg.KopoKopoCallbackURL,
-		clientID:      cfg.KopoKopoClientID,
-		clientSecret:  cfg.KopoKopoClientSecret,
-		accessToken:   cfg.KopoKopoAccessToken,
-		requestQueue:  make(chan stkPayload, 100), // Buffer 100 requests
+		baseURL:        cfg.KopoKopoBaseURL,
+		webhookSecret:  cfg.KopoKopoWebhookSecret,
+		tillNumber:     cfg.KopoKopoTillNumber,
+		callbackURL:    cfg.KopoKopoCallbackURL,
+		clientID:       cfg.KopoKopoClientID,
+		clientSecret:   cfg.KopoKopoClientSecret,
+		accessToken:    cfg.KopoKopoAccessToken,
+		requestQueue:   make(chan stkPayload, 100), // Buffer 100 requests
+		inFlightPhones: make(map[string]time.Time), // Track in-flight requests by phone
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
-	
+
 	// Start background worker
 	go c.processQueue()
-	
+
 	return c, nil
 }
 
@@ -141,19 +145,47 @@ type STKPushResponse struct {
 }
 
 // InitiateSTKPush queues an M-Pesa STK Push request for async processing.
-// Returns nil if successfully queued, error if queue is full.
+// Returns nil if successfully queued, error if queue is full or duplicate request.
 func (c *Client) InitiateSTKPush(ctx context.Context, orderID string, phone string, amount float64) error {
+	// Normalize phone for consistent tracking (remove + prefix if present)
+	normalizedPhone := strings.TrimPrefix(phone, "+")
+
+	// DUPLICATE CHECK: Prevent sending multiple STK pushes to same phone within 60 seconds
+	c.inFlightMu.RLock()
+	if lastRequest, exists := c.inFlightPhones[normalizedPhone]; exists {
+		if time.Since(lastRequest) < 60*time.Second {
+			c.inFlightMu.RUnlock()
+			slog.Warn("Duplicate STK push prevented - request already in flight",
+				"phone", phone,
+				"order_id", orderID,
+				"last_request_ago", time.Since(lastRequest).String())
+			// Return nil (not an error) because a request is already pending
+			// The user should check their phone for the existing prompt
+			return nil
+		}
+	}
+	c.inFlightMu.RUnlock()
+
+	// Mark this phone as having an in-flight request
+	c.inFlightMu.Lock()
+	c.inFlightPhones[normalizedPhone] = time.Now()
+	c.inFlightMu.Unlock()
+
 	payload := stkPayload{
 		orderID: orderID,
 		phone:   phone,
 		amount:  amount,
 	}
-	
+
 	// Non-blocking send: return error if queue is full
 	select {
 	case c.requestQueue <- payload:
 		return nil
 	default:
+		// Queue full - clear in-flight marker so user can retry
+		c.inFlightMu.Lock()
+		delete(c.inFlightPhones, normalizedPhone)
+		c.inFlightMu.Unlock()
 		return errors.New("payment system busy, please try again")
 	}
 }
@@ -163,10 +195,10 @@ func (c *Client) InitiateSTKPush(ctx context.Context, orderID string, phone stri
 func (c *Client) processQueue() {
 	ticker := time.NewTicker(2100 * time.Millisecond) // 2.1 seconds
 	defer ticker.Stop()
-	
+
 	for {
 		<-ticker.C // Wait for tick
-		
+
 		// Try to get next item from queue (non-blocking)
 		select {
 		case payload := <-c.requestQueue:
@@ -180,6 +212,13 @@ func (c *Client) processQueue() {
 				slog.Info("STK push sent successfully",
 					"order_id", payload.orderID)
 			}
+
+			// Clear in-flight marker after processing (allow new requests after ~60s)
+			// The deduplication window prevents rapid double-clicks, not long-term blocking
+			normalizedPhone := strings.TrimPrefix(payload.phone, "+")
+			c.inFlightMu.Lock()
+			delete(c.inFlightPhones, normalizedPhone)
+			c.inFlightMu.Unlock()
 		default:
 			// Queue is empty, continue waiting
 		}
@@ -282,7 +321,7 @@ func (c *Client) sendSTKPush(ctx context.Context, orderID string, phone string, 
 	} else {
 		slog.Info("Kopo Kopo STK push accepted", "order_id", orderID, "status_code", resp.StatusCode)
 	}
-	
+
 	return nil
 }
 
@@ -300,10 +339,10 @@ func (c *Client) clearCachedToken() {
 // getAccessTokenWithRefresh gets a valid token, forcing refresh if close to expiry
 func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) {
 	c.tokenMu.Lock()
-	
+
 	// Check if we have OAuth credentials
 	hasOAuth := c.clientID != "" && c.clientSecret != ""
-	
+
 	// If we have a static token and no OAuth credentials, use the static token
 	// But warn if it might be expired (we can't know without trying)
 	staticToken := c.accessToken
@@ -311,7 +350,7 @@ func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) 
 		c.tokenMu.Unlock()
 		return staticToken, nil
 	}
-	
+
 	// If using OAuth, check if token needs refresh (within 10 minutes of expiry for safety)
 	if hasOAuth {
 		if c.accessToken != "" && time.Now().Add(10*time.Minute).Before(c.tokenExpiry) {
@@ -321,7 +360,7 @@ func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) 
 		}
 	}
 	c.tokenMu.Unlock()
-	
+
 	// Fetch new OAuth token
 	if hasOAuth {
 		token, expiresIn, err := c.fetchOAuthToken(ctx)
@@ -335,7 +374,7 @@ func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) 
 		slog.Info("OAuth token refreshed", "expires_in_seconds", expiresIn)
 		return token, nil
 	}
-	
+
 	return "", errors.New("no valid authentication method configured")
 }
 
@@ -343,16 +382,16 @@ func (c *Client) getAccessTokenWithRefresh(ctx context.Context) (string, error) 
 func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []byte) bool {
 	// Debug logging
 	fmt.Printf("[DEBUG] Webhook signature received: %s\n", signature)
-	fmt.Printf("[DEBUG] Webhook secret configured: %s (length: %d)\n", 
+	fmt.Printf("[DEBUG] Webhook secret configured: %s (length: %d)\n",
 		c.webhookSecret[:min(10, len(c.webhookSecret))]+"...", len(c.webhookSecret))
 	fmt.Printf("[DEBUG] Payload length: %d bytes\n", len(payload))
-	
+
 	// If no webhook secret is configured, log warning but allow
 	if c.webhookSecret == "" {
 		fmt.Println("[WARN] No webhook secret configured - skipping signature verification")
 		return true
 	}
-	
+
 	// Signature format: sha256=<hex_string>
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "sha256" {
@@ -370,7 +409,7 @@ func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []
 	mac := hmac.New(sha256.New, []byte(c.webhookSecret))
 	mac.Write(payload)
 	computedSig := mac.Sum(nil)
-	
+
 	// Debug: show computed vs received
 	fmt.Printf("[DEBUG] Computed signature: %x\n", computedSig)
 	fmt.Printf("[DEBUG] Received signature: %x\n", expectedSig)
@@ -379,30 +418,30 @@ func (c *Client) VerifyWebhook(ctx context.Context, signature string, payload []
 	if !isValid {
 		fmt.Println("[WARN] Signature mismatch - check KOPOKOPO_WEBHOOK_SECRET")
 	}
-	
+
 	return isValid
 }
 
 // PaymentWebhookPayload represents the buygoods_transaction_received webhook format
 type PaymentWebhookPayload struct {
-	Topic     string    `json:"topic"`      // e.g., "buygoods_transaction_received"
-	ID        string    `json:"id"`
-	CreatedAt string    `json:"created_at"`
+	Topic     string `json:"topic"` // e.g., "buygoods_transaction_received"
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
 	Event     struct {
 		Type     string `json:"type"`
 		Resource struct {
-			ID                 string  `json:"id"`
-			Amount             string  `json:"amount"`
-			Status             string  `json:"status"`
-			System             string  `json:"system"`
-			Currency           string  `json:"currency"`
-			Reference          string  `json:"reference"`
-			TillNumber         string  `json:"till_number"`
-			SenderPhoneNumber  string  `json:"sender_phone_number"`
-			HashedSenderPhone  string  `json:"hashed_sender_phone"` // SHA256 hash of sender phone (for buygoods webhooks)
-			OriginationTime    string  `json:"origination_time"`
-			SenderFirstName    string  `json:"sender_first_name"`
-			SenderLastName     string  `json:"sender_last_name"`
+			ID                string `json:"id"`
+			Amount            string `json:"amount"`
+			Status            string `json:"status"`
+			System            string `json:"system"`
+			Currency          string `json:"currency"`
+			Reference         string `json:"reference"`
+			TillNumber        string `json:"till_number"`
+			SenderPhoneNumber string `json:"sender_phone_number"`
+			HashedSenderPhone string `json:"hashed_sender_phone"` // SHA256 hash of sender phone (for buygoods webhooks)
+			OriginationTime   string `json:"origination_time"`
+			SenderFirstName   string `json:"sender_first_name"`
+			SenderLastName    string `json:"sender_last_name"`
 		} `json:"resource"`
 	} `json:"event"`
 	Links struct {
@@ -450,18 +489,18 @@ type IncomingPaymentWebhook struct {
 func (c *Client) ProcessWebhook(ctx context.Context, payload []byte) (*core.PaymentWebhook, error) {
 	// Debug: Log raw payload
 	fmt.Printf("[DEBUG] Raw webhook payload: %s\n", string(payload))
-	
+
 	// Try to detect which format this is by checking for "data" or "topic" field
 	var detector map[string]interface{}
 	if err := json.Unmarshal(payload, &detector); err != nil {
 		return nil, fmt.Errorf("failed to parse webhook payload: %w", err)
 	}
-	
+
 	// Check if this is an incoming_payment webhook (has "data" field)
 	if _, hasData := detector["data"]; hasData {
 		return c.processIncomingPaymentWebhook(payload)
 	}
-	
+
 	// Otherwise, try buygoods_transaction_received format
 	return c.processBuygoodsWebhook(payload)
 }
@@ -472,38 +511,38 @@ func (c *Client) processIncomingPaymentWebhook(payload []byte) (*core.PaymentWeb
 	if err := json.Unmarshal(payload, &webhook); err != nil {
 		return nil, fmt.Errorf("failed to parse incoming_payment webhook: %w", err)
 	}
-	
+
 	attrs := webhook.Data.Attributes
-	
+
 	// Debug log
 	fmt.Printf("[DEBUG] Incoming Payment webhook - Type: %s, Status: %s, OrderID: %s\n",
 		webhook.Data.Type, attrs.Status, attrs.Metadata.OrderID)
-	
+
 	// Check if payment was successful
 	isSuccess := strings.ToLower(attrs.Status) == "success"
-	
+
 	result := &core.PaymentWebhook{
 		OrderID: attrs.Metadata.OrderID, // We have the order ID directly!
 		Status:  attrs.Status,
 		Success: isSuccess,
 	}
-	
+
 	// Extract phone and amount from event.resource if available
 	if attrs.Event.Resource != nil {
 		result.Phone = attrs.Event.Resource.SenderPhoneNumber
 		result.Reference = attrs.Event.Resource.Reference
-		
+
 		if attrs.Event.Resource.Amount != "" {
 			var amount float64
 			if _, err := fmt.Sscanf(attrs.Event.Resource.Amount, "%f", &amount); err == nil {
 				result.Amount = amount
 			}
 		}
-		
+
 		fmt.Printf("[DEBUG] Incoming Payment - Phone: %s, Amount: %.0f, Reference: %s\n",
 			result.Phone, result.Amount, result.Reference)
 	}
-	
+
 	return result, nil
 }
 
@@ -513,10 +552,10 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 	if err := json.Unmarshal(payload, &webhook); err != nil {
 		return nil, fmt.Errorf("failed to parse buygoods webhook: %w", err)
 	}
-	
+
 	// Debug: Log parsed webhook structure
 	fmt.Printf("[DEBUG] Buygoods webhook - Topic: %s, Status: %s, Phone: %s, HashedPhone: %s, Amount: %s, Reference: %s\n",
-		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber, 
+		webhook.Topic, webhook.Event.Resource.Status, webhook.Event.Resource.SenderPhoneNumber,
 		webhook.Event.Resource.HashedSenderPhone, webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction.

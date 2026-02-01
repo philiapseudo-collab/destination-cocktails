@@ -176,10 +176,11 @@ func (h *Handler) ReceiveMessage(c *fiber.Ctx) error {
 				case "text":
 					messageText = msg.Text.Body
 				case "interactive":
-					if msg.Interactive.Type == "button_reply" {
+					switch msg.Interactive.Type {
+					case "button_reply":
 						interactiveID = msg.Interactive.ButtonReply.ID
 						messageText = msg.Interactive.ButtonReply.Title
-					} else if msg.Interactive.Type == "list_reply" {
+					case "list_reply":
 						interactiveID = msg.Interactive.ListReply.ID
 						messageText = msg.Interactive.ListReply.Title
 					}
@@ -269,7 +270,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 	if result.Success {
 		var order *core.Order
 		var err error
-		
+
 		// Strategy 1: Use OrderID if available (from incoming_payment webhook)
 		if result.OrderID != "" {
 			order, err = h.orderRepo.GetByID(ctx, result.OrderID)
@@ -279,7 +280,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("[DEBUG] Found order by ID: %s (status: %s)\n", order.ID, order.Status)
 			}
 		}
-		
+
 		// Strategy 2: Fallback to phone + amount matching
 		if order == nil && result.Phone != "" && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
@@ -287,7 +288,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("Error finding order by phone+amount: %v\n", err)
 			}
 		}
-		
+
 		// Strategy 3: Match by hashed phone + amount (for buygoods webhooks with hashed phone)
 		// This is more precise than amount-only matching for concurrent orders
 		if order == nil && result.HashedPhone != "" && result.Amount > 0 {
@@ -295,23 +296,29 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 			if err != nil {
 				fmt.Printf("Error finding order by hashed phone+amount: %v\n", err)
 			} else if order != nil {
-				fmt.Printf("[DEBUG] Found order by hashed phone match: %s (phone: %s, amount: %.0f)\n", 
+				fmt.Printf("[DEBUG] Found order by hashed phone match: %s (phone: %s, amount: %.0f)\n",
 					order.ID, order.CustomerPhone, order.TotalAmount)
 			}
 		}
-		
+
 		// Strategy 4: Fallback to amount-only matching (last resort)
 		// This matches the most recent pending order with the same amount within 30 minutes
+		// WARNING: This can cause cross-order matching if two users order the same amount!
 		if order == nil && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByAmount(ctx, result.Amount)
 			if err != nil {
 				fmt.Printf("Error finding order by amount: %v\n", err)
 			} else if order != nil {
-				fmt.Printf("[DEBUG] Found order by amount-only fallback: %s (phone: %s, amount: %.0f)\n", 
-					order.ID, order.CustomerPhone, order.TotalAmount)
+				// Log as warning since this is a risky fallback that can cause mismatches
+				slog.Warn("Payment matched using amount-only fallback (potential mismatch risk)",
+					"matched_order_id", order.ID,
+					"matched_phone", order.CustomerPhone,
+					"webhook_phone", result.Phone,
+					"amount", order.TotalAmount,
+					"reference", result.Reference)
 			}
 		}
-		
+
 		// If no order found, log as orphaned payment (only if we had identifiers)
 		if order == nil {
 			if result.OrderID != "" || result.Phone != "" {
@@ -327,7 +334,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 					"reference", result.Reference,
 					"status", result.Status)
 			}
-			
+
 			// Return 200 OK anyway (don't fail the webhook)
 			return c.Status(http.StatusOK).JSON(fiber.Map{
 				"status": "ok",
@@ -345,7 +352,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				"note":   "payment already processed",
 			})
 		}
-		
+
 		// Update order status to PAID
 		if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusPaid); err != nil {
 			// Log error but don't fail the webhook (idempotency)
@@ -379,10 +386,10 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 	} else {
 		// Payment failed or cancelled
 		fmt.Printf("[DEBUG] Payment failed/cancelled - OrderID: %s, Status: %s\n", result.OrderID, result.Status)
-		
+
 		var order *core.Order
 		var err error
-		
+
 		// Try to find order by ID first (from incoming_payment webhook)
 		if result.OrderID != "" {
 			order, err = h.orderRepo.GetByID(ctx, result.OrderID)
@@ -390,7 +397,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("Error finding failed order by ID: %v\n", err)
 			}
 		}
-		
+
 		// Fallback to phone + amount matching
 		if order == nil && result.Phone != "" && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByPhoneAndAmount(ctx, result.Phone, result.Amount)
@@ -398,7 +405,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("Error finding failed order by phone+amount: %v\n", err)
 			}
 		}
-		
+
 		// Fallback to hashed phone + amount matching
 		if order == nil && result.HashedPhone != "" && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByHashedPhoneAndAmount(ctx, result.HashedPhone, result.Amount)
@@ -406,7 +413,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("Error finding failed order by hashed phone+amount: %v\n", err)
 			}
 		}
-		
+
 		// Fallback to amount-only matching for buygoods webhooks
 		if order == nil && result.Amount > 0 {
 			order, err = h.orderRepo.FindPendingByAmount(ctx, result.Amount)
@@ -414,7 +421,7 @@ func (h *Handler) HandlePaymentWebhook(c *fiber.Ctx) error {
 				fmt.Printf("Error finding failed order by amount: %v\n", err)
 			}
 		}
-		
+
 		if order != nil {
 			if err := h.orderRepo.UpdateStatus(ctx, order.ID, core.OrderStatusFailed); err != nil {
 				fmt.Printf("Error updating order status to FAILED: %v\n", err)
