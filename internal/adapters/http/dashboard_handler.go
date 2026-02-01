@@ -83,13 +83,14 @@ func (h *DashboardHandler) VerifyOTP(c *fiber.Ctx) error {
 	}
 
 	// Set JWT token in HTTP-only cookie
+	// Use Secure=true and SameSite=None for cross-origin (dashboard on different subdomain)
 	c.Cookie(&fiber.Cookie{
 		Name:     "auth_token",
 		Value:    token,
 		Expires:  time.Now().Add(7 * 24 * time.Hour),
 		HTTPOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
-		SameSite: "Lax",
+		Secure:   true,  // Required for SameSite=None (HTTPS)
+		SameSite: "None", // Allow cross-origin cookie for dashboard
 	})
 
 	return c.JSON(fiber.Map{
@@ -101,12 +102,14 @@ func (h *DashboardHandler) VerifyOTP(c *fiber.Ctx) error {
 // Logout handles user logout
 // POST /api/admin/auth/logout
 func (h *DashboardHandler) Logout(c *fiber.Ctx) error {
-	// Clear auth cookie
+	// Clear auth cookie (match settings from verify-otp for cross-origin)
 	c.Cookie(&fiber.Cookie{
 		Name:     "auth_token",
 		Value:    "",
 		Expires:  time.Now().Add(-1 * time.Hour),
 		HTTPOnly: true,
+		Secure:   true,
+		SameSite: "None",
 	})
 
 	return c.JSON(fiber.Map{

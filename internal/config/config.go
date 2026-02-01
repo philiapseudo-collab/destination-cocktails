@@ -36,7 +36,8 @@ type Config struct {
 	BarStaffPhone string `envconfig:"BAR_STAFF_PHONE"` // Phone number for bar staff notifications
 
 	// Dashboard
-	JWTSecret string `envconfig:"JWT_SECRET" default:"change-this-secret-in-production"`
+	JWTSecret     string `envconfig:"JWT_SECRET" default:"change-this-secret-in-production"`
+	AllowedOrigin string `envconfig:"ALLOWED_ORIGIN" default:"https://destination-dashboard-production.up.railway.app"`
 
 	// Kopo Kopo (use Client ID + Secret for OAuth; or set Access Token for sandbox manual token)
 	KopoKopoClientID        string `envconfig:"KOPOKOPO_CLIENT_ID"`

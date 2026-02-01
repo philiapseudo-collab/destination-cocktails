@@ -11,6 +11,8 @@ import (
 	"github.com/dumu-tech/destination-cocktails/internal/adapters/redis"
 	"github.com/dumu-tech/destination-cocktails/internal/adapters/whatsapp"
 	"github.com/dumu-tech/destination-cocktails/internal/config"
+	"github.com/dumu-tech/destination-cocktails/internal/events"
+	"github.com/dumu-tech/destination-cocktails/internal/middleware"
 	"github.com/dumu-tech/destination-cocktails/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -94,6 +96,24 @@ func main() {
 	)
 	log.Println("✓ HTTP handler initialized")
 
+	// Initialize EventBus and wire it to handler and dashboard
+	eventBus := events.NewEventBus()
+	httpHandler.SetEventBus(eventBus)
+
+	// Initialize DashboardService and DashboardHandler
+	dashboardService := service.NewDashboardService(
+		db.AdminUserRepository(),
+		db.OTPRepository(),
+		productRepo,
+		orderRepo,
+		db.AnalyticsRepository(),
+		whatsappClient,
+		eventBus,
+		cfg.JWTSecret,
+	)
+	dashboardHandler := http.NewDashboardHandler(dashboardService)
+	log.Println("✓ Dashboard API initialized")
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -110,11 +130,15 @@ func main() {
 	// Middleware
 	app.Use(recover.New())
 	app.Use(logger.New())
+	allowedOrigin := cfg.AllowedOrigin
+	if allowedOrigin == "" {
+		allowedOrigin = "*"
+	}
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "*",
-		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowOrigins:     allowedOrigin,
+		AllowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
 		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
-		AllowCredentials: false,
+		AllowCredentials: allowedOrigin != "*",
 	}))
 
 	// Health check
@@ -132,6 +156,23 @@ func main() {
 	// Payment webhook routes (Kopo Kopo)
 	app.Post("/api/webhooks/payment", httpHandler.HandlePaymentWebhook)
 
+	// Dashboard API - Auth (public)
+	app.Post("/api/admin/auth/request-otp", dashboardHandler.RequestOTP)
+	app.Post("/api/admin/auth/verify-otp", dashboardHandler.VerifyOTP)
+	app.Post("/api/admin/auth/logout", dashboardHandler.Logout)
+
+	// Dashboard API - Protected routes
+	admin := app.Group("/api/admin", middleware.AuthMiddleware(dashboardService))
+	admin.Get("/auth/me", dashboardHandler.GetMe)
+	admin.Get("/products", dashboardHandler.GetProducts)
+	admin.Patch("/products/:id/stock", dashboardHandler.UpdateStock)
+	admin.Patch("/products/:id/price", dashboardHandler.UpdatePrice)
+	admin.Get("/orders", dashboardHandler.GetOrders)
+	admin.Get("/analytics/overview", dashboardHandler.GetAnalyticsOverview)
+	admin.Get("/analytics/revenue", dashboardHandler.GetRevenueTrend)
+	admin.Get("/analytics/top-products", dashboardHandler.GetTopProducts)
+	admin.Get("/events", dashboardHandler.SSEEvents)
+
 	// Start server
 	port := cfg.AppPort
 	if port == "" {
@@ -141,7 +182,9 @@ func main() {
 	log.Printf("🚀 Server starting on port %s...", port)
 	log.Printf("   WhatsApp Webhook: http://localhost:%s/api/webhooks/whatsapp", port)
 	log.Printf("   Payment Webhook:  http://localhost:%s/api/webhooks/payment", port)
+	log.Printf("   Dashboard API:    http://localhost:%s/api/admin/*", port)
 	log.Printf("   Health Check:     http://localhost:%s/health", port)
+	log.Printf("   CORS AllowOrigin: %s", allowedOrigin)
 
 	if err := app.Listen(fmt.Sprintf(":%s", port)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
