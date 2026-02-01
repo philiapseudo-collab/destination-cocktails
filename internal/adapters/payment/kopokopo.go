@@ -559,13 +559,14 @@ func (c *Client) processBuygoodsWebhook(payload []byte) (*core.PaymentWebhook, e
 		webhook.Event.Resource.HashedSenderPhone, webhook.Event.Resource.Amount, webhook.Event.Resource.Reference)
 
 	// Check if this is a successful transaction.
-	// CRITICAL: Only treat "Success" as success. Do NOT treat "Received" as success:
-	// "Received" means the gateway received the transaction (e.g. pending customer PIN);
-	// notifying bar staff here would send "Mark Done" before payment is complete.
+	// CRITICAL: For buygoods_transaction_received webhooks:
+	// - "Received" means the payment was successfully received by the till
+	// - "Success" also means success
+	// Both should trigger order fulfillment.
+	status := strings.ToLower(webhook.Event.Resource.Status)
 	isSuccess := (webhook.Topic == "buygoods_transaction_received" ||
 		strings.Contains(strings.ToLower(webhook.Topic), "transaction")) &&
-		(webhook.Event.Resource.Status == "Success" ||
-			strings.ToLower(webhook.Event.Resource.Status) == "success")
+		(status == "success" || status == "received")
 
 	result := &core.PaymentWebhook{
 		OrderID:     "", // Will be matched in handler using phone + amount, or amount alone
