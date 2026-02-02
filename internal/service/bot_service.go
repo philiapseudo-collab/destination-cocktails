@@ -95,6 +95,12 @@ func (b *BotService) HandleIncomingMessage(phone string, message string, message
 		}
 	}
 
+	// Handle Retry Payment button (from 15s timeout fallback)
+	if strings.HasPrefix(normalizedMessage, "retry_pay_") {
+		orderID := strings.TrimPrefix(message, "retry_pay_") // Use original case
+		return b.handleRetryPayment(ctx, phone, session, orderID)
+	}
+
 	// Route based on state
 	switch session.State {
 	case "START", "":
@@ -687,7 +693,58 @@ func (b *BotService) handlePaymentPhoneInput(ctx context.Context, phone string, 
 	return b.processPayment(ctx, phone, session, normalizedPhone)
 }
 
+// handleRetryPayment handles the Retry Payment button click from the 15s timeout fallback
+// It re-initiates STK push for an existing PENDING order (SILENT - no WhatsApp message)
+func (b *BotService) handleRetryPayment(ctx context.Context, whatsappPhone string, session *core.Session, orderID string) error {
+	// Fetch the existing order
+	order, err := b.OrderRepo.GetByID(ctx, orderID)
+	if err != nil {
+		b.WhatsApp.SendText(ctx, whatsappPhone, "Order not found. Please start a new order.")
+		return nil
+	}
+
+	// Check if order is still PENDING (payment not yet completed)
+	if order.Status != core.OrderStatusPending {
+		b.WhatsApp.SendText(ctx, whatsappPhone, "This order has already been processed.")
+		return nil
+	}
+
+	// Re-initiate STK Push to the payment phone (SILENT - no confirmation message)
+	err = b.Payment.InitiateSTKPush(ctx, orderID, order.CustomerPhone, order.TotalAmount)
+	if err != nil {
+		// Send error message - safe because no STK push was sent
+		b.WhatsApp.SendText(ctx, whatsappPhone, "⚠️ Payment system busy. Please try again in a moment.")
+		return nil
+	}
+
+	// SAFETY NET: Launch goroutine to check order status after 15 seconds
+	go func(oID string, waPhone string) {
+		time.Sleep(15 * time.Second)
+
+		checkCtx := context.Background()
+		order, err := b.OrderRepo.GetByID(checkCtx, oID)
+		if err != nil {
+			return
+		}
+
+		if order.Status == core.OrderStatusPending {
+			// Order still pending - send retry button again
+			timeoutMsg := "⏳ *Payment Timeout*\n\nDid the M-Pesa prompt fail to appear?\n\nTap the button below to try again."
+			buttons := []core.Button{
+				{
+					ID:    "retry_pay_" + oID,
+					Title: "Retry Payment",
+				},
+			}
+			b.WhatsApp.SendMenuButtons(checkCtx, waPhone, timeoutMsg, buttons)
+		}
+	}(orderID, whatsappPhone)
+
+	return nil
+}
+
 // processPayment creates the order and initiates STK push
+// SILENT CHECKOUT: No WhatsApp messages are sent during STK push to prevent iPhone UI freeze
 func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, session *core.Session, paymentPhone string) error {
 	// Calculate total
 	total := 0.0
@@ -742,37 +799,49 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 	session.PendingOrderID = orderID
 
 	// Initiate STK Push to the payment phone
+	// SILENT MODE: No success message is sent - this prevents iPhone UI freeze
 	err = b.Payment.InitiateSTKPush(ctx, orderID, paymentPhone, total)
 	if err != nil {
 		// If queueing fails (system busy), update order status to FAILED and clear pending ID
 		b.OrderRepo.UpdateStatus(ctx, orderID, core.OrderStatusFailed)
 		session.PendingOrderID = ""
 		b.Session.Set(ctx, whatsappPhone, session, 7200)
+		// Send error message - safe because no STK push was sent to freeze the phone
+		b.WhatsApp.SendText(ctx, whatsappPhone, "⚠️ Payment system busy. Please try again in a moment.")
 		return fmt.Errorf("failed to initiate STK push: %w", err)
-	}
-
-	// COURTESY DELAY: Wait 3 seconds before sending WhatsApp message
-	// This gives iPhone time to render the M-Pesa STK popup before the WhatsApp
-	// notification banner appears, preventing iOS UI thread collision/freeze
-	time.Sleep(3 * time.Second)
-
-	// Send confirmation message with the phone number being charged
-	cartSummary := "📦 Order Summary:\n\n"
-	for _, item := range session.Cart {
-		itemTotal := item.Price * float64(item.Quantity)
-		cartSummary += fmt.Sprintf("%s x%d = KES %.0f\n", item.Name, item.Quantity, itemTotal)
-	}
-	cartSummary += fmt.Sprintf("\n💰 Total: KES %.0f\n\n", total)
-	cartSummary += fmt.Sprintf("💳 I've sent an M-Pesa prompt to *%s*. Please enter your PIN to complete the payment.", paymentPhone)
-
-	if err := b.WhatsApp.SendText(ctx, whatsappPhone, cartSummary); err != nil {
-		return fmt.Errorf("failed to send confirmation: %w", err)
 	}
 
 	// Clear cart and reset state, but KEEP PendingOrderID until payment is processed
 	session.Cart = []core.CartItem{}
 	session.State = "START"
-	return b.Session.Set(ctx, whatsappPhone, session, 7200)
+	b.Session.Set(ctx, whatsappPhone, session, 7200)
+
+	// SAFETY NET: Launch goroutine to check order status after 15 seconds
+	// If order is still PENDING, send a Retry button to the user
+	go func(oID string, waPhone string, payPhone string) {
+		time.Sleep(15 * time.Second)
+
+		// Check if order is still PENDING
+		checkCtx := context.Background()
+		order, err := b.OrderRepo.GetByID(checkCtx, oID)
+		if err != nil {
+			return // Order not found or error, skip
+		}
+
+		if order.Status == core.OrderStatusPending {
+			// Order still pending after 15 seconds - send retry button
+			timeoutMsg := "⏳ *Payment Timeout*\n\nDid the M-Pesa prompt fail to appear?\n\nTap the button below to try again."
+			buttons := []core.Button{
+				{
+					ID:    "retry_pay_" + oID,
+					Title: "Retry Payment",
+				},
+			}
+			b.WhatsApp.SendMenuButtons(checkCtx, waPhone, timeoutMsg, buttons)
+		}
+	}(orderID, whatsappPhone, paymentPhone)
+
+	return nil
 }
 
 // normalizePhone normalizes a Kenyan phone number to +254xxxxxxxxx format
