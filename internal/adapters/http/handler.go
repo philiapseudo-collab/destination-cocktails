@@ -489,7 +489,7 @@ func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
 	message += fmt.Sprintf("\n*Total:* KES %.0f\n", order.TotalAmount)
 	message += fmt.Sprintf("*Customer:* %s\n", order.CustomerPhone)
 
-	// Send with "Mark Done" button
+	// Build "Mark Done" button
 	buttons := []core.Button{
 		{
 			ID:    fmt.Sprintf("complete_%s", order.ID),
@@ -497,9 +497,20 @@ func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
 		},
 	}
 
-	// Use WhatsAppGateway interface which has SendMenuButtons
+	// Send with "Mark Done" button (try interactive buttons first, fallback to text)
 	if gateway, ok := h.whatsappGateway.(core.WhatsAppGateway); ok {
+		log.Printf("[DEBUG] Sending bar staff notification to %s with interactive buttons", barStaffPhone)
 		if err := gateway.SendMenuButtons(ctx, barStaffPhone, message, buttons); err != nil {
+			log.Printf("Error sending bar staff notification with buttons: %v", err)
+			// Fallback to plain text if buttons fail
+			if err := h.whatsappGateway.SendText(ctx, barStaffPhone, message); err != nil {
+				log.Printf("Error sending bar staff notification (text fallback): %v", err)
+			}
+		}
+	} else {
+		// Fallback: send as plain text if SendMenuButtons not available
+		log.Printf("[DEBUG] Sending bar staff notification to %s as plain text (no button support)", barStaffPhone)
+		if err := h.whatsappGateway.SendText(ctx, barStaffPhone, message); err != nil {
 			log.Printf("Error sending bar staff notification: %v", err)
 		}
 	}
