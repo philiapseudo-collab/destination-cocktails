@@ -40,13 +40,13 @@ type Config struct {
 	AllowedOrigin string `envconfig:"ALLOWED_ORIGIN" default:"https://destination-dashboard-production.up.railway.app"`
 
 	// Kopo Kopo (use Client ID + Secret for OAuth; or set Access Token for sandbox manual token)
-	KopoKopoClientID        string `envconfig:"KOPOKOPO_CLIENT_ID"`
-	KopoKopoClientSecret    string `envconfig:"KOPOKOPO_CLIENT_SECRET"`
-	KopoKopoWebhookSecret   string `envconfig:"KOPOKOPO_WEBHOOK_SECRET"`    // Used to verify X-KopoKopo-Signature header
-	KopoKopoBaseURL         string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
-	KopoKopoTillNumber      string `envconfig:"KOPOKOPO_TILL_NUMBER"`
-	KopoKopoAccessToken     string `envconfig:"KOPOKOPO_ACCESS_TOKEN"`      // Optional: manual token (e.g. sandbox); else we use Client ID/Secret OAuth
-	KopoKopoCallbackURL     string `envconfig:"KOPOKOPO_CALLBACK_URL"`      // Full callback URL (e.g., https://your-app.railway.app/api/webhooks/payment)
+	KopoKopoClientID      string `envconfig:"KOPOKOPO_CLIENT_ID"`
+	KopoKopoClientSecret  string `envconfig:"KOPOKOPO_CLIENT_SECRET"`
+	KopoKopoWebhookSecret string `envconfig:"KOPOKOPO_WEBHOOK_SECRET"` // Used to verify X-KopoKopo-Signature header
+	KopoKopoBaseURL       string `envconfig:"KOPOKOPO_BASE_URL" default:"https://api.kopokopo.com"`
+	KopoKopoTillNumber    string `envconfig:"KOPOKOPO_TILL_NUMBER"`
+	KopoKopoAccessToken   string `envconfig:"KOPOKOPO_ACCESS_TOKEN"` // Optional: manual token (e.g. sandbox); else we use Client ID/Secret OAuth
+	KopoKopoCallbackURL   string `envconfig:"KOPOKOPO_CALLBACK_URL"` // Full callback URL (e.g., https://your-app.railway.app/api/webhooks/payment)
 
 	// Pesapal
 	PesapalClientID     string `envconfig:"PESAPAL_CLIENT_ID"`
