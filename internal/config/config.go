@@ -33,7 +33,7 @@ type Config struct {
 	WhatsAppVerifyToken   string `envconfig:"WHATSAPP_VERIFY_TOKEN"`
 
 	// Bar Staff
-	BarStaffPhone string `envconfig:"BAR_STAFF_PHONE"` // Phone number for bar staff notifications
+	BarStaffPhone string `envconfig:"BAR_STAFF_PHONE" default:"254735537873"` // Phone number for bar staff notifications
 
 	// Dashboard
 	JWTSecret     string `envconfig:"JWT_SECRET" default:"change-this-secret-in-production"`

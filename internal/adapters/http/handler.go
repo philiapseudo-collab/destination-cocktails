@@ -469,17 +469,22 @@ func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
 		return
 	}
 
-	// Build message with pickup code and items
-	message := fmt.Sprintf("🔔 *New Order #%s*\n\n", order.PickupCode)
-	message += "📦 *Items:*\n"
+	// Build message with order details
+	message := fmt.Sprintf("🚨 *New Order Paid!*\n\n")
+	message += fmt.Sprintf("*Order #%s*\n\n", order.PickupCode)
+	message += "*Items:*\n"
 
 	for _, item := range order.Items {
-		// Note: Item names should be populated by the repository
-		message += fmt.Sprintf("• %d x Item\n", item.Quantity)
+		// Display actual product name (populated by repository JOIN)
+		productName := item.ProductName
+		if productName == "" {
+			productName = "Unknown Item"
+		}
+		message += fmt.Sprintf("• %d x %s\n", item.Quantity, productName)
 	}
 
-	message += fmt.Sprintf("\n💰 Total: KES %.0f\n", order.TotalAmount)
-	message += fmt.Sprintf("📱 Customer: %s\n", order.CustomerPhone)
+	message += fmt.Sprintf("\n*Total:* KES %.0f\n", order.TotalAmount)
+	message += fmt.Sprintf("*Customer:* %s\n", order.CustomerPhone)
 
 	// Send with "Mark Done" button
 	buttons := []core.Button{
