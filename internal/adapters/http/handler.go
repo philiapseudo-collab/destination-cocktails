@@ -464,6 +464,9 @@ func (h *Handler) notifyBarStaff(ctx context.Context, order *core.Order) {
 	cfg := config.Get()
 	barStaffPhone := cfg.BarStaffPhone
 
+	// Debug log to verify which phone is configured
+	log.Printf("[DEBUG] Bar staff notification - configured phone: %s, order: %s", barStaffPhone, order.PickupCode)
+
 	if barStaffPhone == "" {
 		log.Println("BAR_STAFF_PHONE not configured, skipping bar staff notification")
 		return
