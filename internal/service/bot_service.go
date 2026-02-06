@@ -717,9 +717,10 @@ func (b *BotService) handleRetryPayment(ctx context.Context, whatsappPhone strin
 		return nil
 	}
 
-	// SAFETY NET: Launch goroutine to check order status after 15 seconds
+	// SAFETY NET: Launch goroutine to check order status after 45 seconds
+	// Note: M-Pesa STK prompts can take 20-40 seconds to arrive, so we wait longer
 	go func(oID string, waPhone string) {
-		time.Sleep(15 * time.Second)
+		time.Sleep(45 * time.Second)
 
 		checkCtx := context.Background()
 		order, err := b.OrderRepo.GetByID(checkCtx, oID)
@@ -729,7 +730,13 @@ func (b *BotService) handleRetryPayment(ctx context.Context, whatsappPhone strin
 
 		if order.Status == core.OrderStatusPending {
 			// Order still pending - send retry button again
-			timeoutMsg := "⏳ *Payment Timeout*\n\nDid the M-Pesa prompt fail to appear?\n\nTap the button below to try again."
+			timeoutMsg := "⏳ *Waiting for M-Pesa*\n\n" +
+				"The payment prompt can take up to 60 seconds to appear.\n\n" +
+				"*If it hasn't appeared yet:*\n" +
+				"• Check your phone for the M-Pesa prompt\n" +
+				"• Make sure you have network signal\n" +
+				"• Tap 'Retry' below if needed\n\n" +
+				"_If you already completed payment, please wait for confirmation._"
 			buttons := []core.Button{
 				{
 					ID:    "retry_pay_" + oID,
@@ -816,10 +823,11 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 	session.State = "START"
 	b.Session.Set(ctx, whatsappPhone, session, 7200)
 
-	// SAFETY NET: Launch goroutine to check order status after 15 seconds
+	// SAFETY NET: Launch goroutine to check order status after 45 seconds
 	// If order is still PENDING, send a Retry button to the user
+	// Note: M-Pesa STK prompts can take 20-40 seconds to arrive, so we wait longer
 	go func(oID string, waPhone string, payPhone string) {
-		time.Sleep(15 * time.Second)
+		time.Sleep(45 * time.Second)
 
 		// Check if order is still PENDING
 		checkCtx := context.Background()
@@ -829,8 +837,14 @@ func (b *BotService) processPayment(ctx context.Context, whatsappPhone string, s
 		}
 
 		if order.Status == core.OrderStatusPending {
-			// Order still pending after 15 seconds - send retry button
-			timeoutMsg := "⏳ *Payment Timeout*\n\nDid the M-Pesa prompt fail to appear?\n\nTap the button below to try again."
+			// Order still pending after 45 seconds - send retry button
+			timeoutMsg := "⏳ *Waiting for M-Pesa*\n\n" +
+				"The payment prompt can take up to 60 seconds to appear.\n\n" +
+				"*If it hasn't appeared yet:*\n" +
+				"• Check your phone for the M-Pesa prompt\n" +
+				"• Make sure you have network signal\n" +
+				"• Tap 'Retry' below if needed\n\n" +
+				"_If you already completed payment, please wait for confirmation._"
 			buttons := []core.Button{
 				{
 					ID:    "retry_pay_" + oID,
