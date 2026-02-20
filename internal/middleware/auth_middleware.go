@@ -26,6 +26,12 @@ func AuthMiddleware(dashboardService *service.DashboardService) fiber.Handler {
 			}
 		}
 
+		// EventSource cannot set Authorization headers in browsers.
+		// Allow token query param fallback for the SSE endpoint only.
+		if token == "" && strings.HasSuffix(c.Path(), "/events") {
+			token = strings.TrimSpace(c.Query("token"))
+		}
+
 		if token == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "unauthorized: no token provided",
