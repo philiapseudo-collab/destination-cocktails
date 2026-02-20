@@ -11,6 +11,7 @@ type EventType string
 
 const (
 	EventNewOrder       EventType = "new_order"
+	EventOrderReady     EventType = "order_ready"
 	EventOrderCompleted EventType = "order_completed"
 	EventStockUpdated   EventType = "stock_updated"
 	EventPriceUpdated   EventType = "price_updated"
@@ -87,6 +88,11 @@ func (eb *EventBus) Publish(eventType EventType, data interface{}) {
 // PublishNewOrder publishes a new order event
 func (eb *EventBus) PublishNewOrder(order interface{}) {
 	eb.Publish(EventNewOrder, order)
+}
+
+// PublishOrderReady publishes an order ready event.
+func (eb *EventBus) PublishOrderReady(order interface{}) {
+	eb.Publish(EventOrderReady, order)
 }
 
 // PublishOrderCompleted publishes an order completed event

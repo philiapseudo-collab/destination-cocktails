@@ -23,7 +23,7 @@ type OrderRepository interface {
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*Order, error)
 	FindPendingByHashedPhoneAndAmount(ctx context.Context, hashedPhone string, amount float64) (*Order, error) // Match by hashed phone from buygoods webhooks
-	FindPendingByAmount(ctx context.Context, amount float64) (*Order, error) // Fallback when phone unavailable
+	FindPendingByAmount(ctx context.Context, amount float64) (*Order, error)                                   // Fallback when phone unavailable
 }
 
 // UserRepository defines the interface for user data access
@@ -70,14 +70,15 @@ type PaymentWebhook struct {
 	Status      string
 	Reference   string
 	Amount      float64
-	Phone       string  // Sender phone number from webhook (may be empty for buygoods)
-	HashedPhone string  // SHA256 hashed phone from buygoods webhooks
+	Phone       string // Sender phone number from webhook (may be empty for buygoods)
+	HashedPhone string // SHA256 hashed phone from buygoods webhooks
 	Success     bool
 }
 
 // AdminUserRepository defines the interface for admin user data access
 type AdminUserRepository interface {
 	GetByPhone(ctx context.Context, phone string) (*AdminUser, error)
+	GetActiveByRole(ctx context.Context, role string) ([]*AdminUser, error)
 	Create(ctx context.Context, user *AdminUser) error
 	IsActive(ctx context.Context, phone string) (bool, error)
 }

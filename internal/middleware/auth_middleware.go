@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/dumu-tech/destination-cocktails/internal/service"
@@ -40,10 +41,38 @@ func AuthMiddleware(dashboardService *service.DashboardService) fiber.Handler {
 		}
 
 		// Store claims in context for use in handlers
-		c.Locals("user_id", claims["user_id"])
-		c.Locals("phone", claims["phone"])
-		c.Locals("name", claims["name"])
-		c.Locals("role", claims["role"])
+		c.Locals("user_id", fmt.Sprintf("%v", claims["user_id"]))
+		c.Locals("phone", fmt.Sprintf("%v", claims["phone"]))
+		c.Locals("name", fmt.Sprintf("%v", claims["name"]))
+		c.Locals("role", strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", claims["role"]))))
+
+		return c.Next()
+	}
+}
+
+// RequireRoles enforces role-based access control after AuthMiddleware.
+func RequireRoles(allowedRoles ...string) fiber.Handler {
+	allowed := make(map[string]struct{}, len(allowedRoles))
+	for _, role := range allowedRoles {
+		normalizedRole := strings.ToUpper(strings.TrimSpace(role))
+		if normalizedRole != "" {
+			allowed[normalizedRole] = struct{}{}
+		}
+	}
+
+	return func(c *fiber.Ctx) error {
+		role := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", c.Locals("role"))))
+		if role == "" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "forbidden: role not found in token",
+			})
+		}
+
+		if _, ok := allowed[role]; !ok {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "forbidden: insufficient permissions",
+			})
+		}
 
 		return c.Next()
 	}

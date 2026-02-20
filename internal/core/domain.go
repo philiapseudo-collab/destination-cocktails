@@ -46,7 +46,7 @@ const (
 	OrderStatusPending   OrderStatus = "PENDING"
 	OrderStatusPaid      OrderStatus = "PAID"
 	OrderStatusFailed    OrderStatus = "FAILED"
-	OrderStatusServed    OrderStatus = "SERVED"
+	OrderStatusReady     OrderStatus = "READY"
 	OrderStatusCompleted OrderStatus = "COMPLETED"
 	OrderStatusCancelled OrderStatus = "CANCELLED"
 )
@@ -90,10 +90,16 @@ type AdminUser struct {
 	ID          string    `json:"id"`
 	PhoneNumber string    `json:"phone_number"`
 	Name        string    `json:"name"`
-	Role        string    `json:"role"` // OWNER, MANAGER, STAFF
+	Role        string    `json:"role"` // MANAGER, BARTENDER
+	PinHash     string    `json:"-"`
 	IsActive    bool      `json:"is_active"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+const (
+	AdminRoleManager   = "MANAGER"
+	AdminRoleBartender = "BARTENDER"
+)
 
 // OTPCode represents a one-time password for authentication
 type OTPCode struct {

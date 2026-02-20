@@ -418,15 +418,15 @@ func (r *orderRepository) GetAllWithFilters(ctx context.Context, status string, 
 func (r *orderRepository) FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*core.Order, error) {
 	// Normalize phone: extract last 9 digits for fallback matching
 	phoneDigits := extractLast9Digits(phone)
-	
+
 	var orderModel OrderModel
 	// Try exact match first, then fallback to last 9 digits match
 	err := r.db.WithContext(ctx).Table("orders").
-		Where("status = ? AND total_amount = ? AND (customer_phone = ? OR customer_phone LIKE ?)", 
+		Where("status = ? AND total_amount = ? AND (customer_phone = ? OR customer_phone LIKE ?)",
 			"PENDING", amount, phone, "%"+phoneDigits).
 		Order("created_at DESC").
 		First(&orderModel).Error
-	
+
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil // No matching order found (not an error)
@@ -468,16 +468,16 @@ func extractLast9Digits(phone string) string {
 // Only matches orders created within the last 30 minutes for safety
 func (r *orderRepository) FindPendingByAmount(ctx context.Context, amount float64) (*core.Order, error) {
 	var orderModel OrderModel
-	
+
 	// Find most recent pending order with matching amount, created within last 30 minutes
 	cutoffTime := time.Now().Add(-30 * time.Minute)
-	
+
 	err := r.db.WithContext(ctx).Table("orders").
-		Where("status = ? AND total_amount = ? AND created_at > ?", 
+		Where("status = ? AND total_amount = ? AND created_at > ?",
 			"PENDING", amount, cutoffTime).
 		Order("created_at DESC").
 		First(&orderModel).Error
-	
+
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil // No matching order found (not an error)
@@ -504,38 +504,38 @@ func (r *orderRepository) FindPendingByHashedPhoneAndAmount(ctx context.Context,
 	if hashedPhone == "" {
 		return nil, nil // Can't match without hash
 	}
-	
+
 	// Find pending orders with matching amount within time window
 	cutoffTime := time.Now().Add(-30 * time.Minute)
 	var orderModels []OrderModel
-	
+
 	err := r.db.WithContext(ctx).Table("orders").
-		Where("status = ? AND total_amount = ? AND created_at > ?", 
+		Where("status = ? AND total_amount = ? AND created_at > ?",
 			"PENDING", amount, cutoffTime).
 		Order("created_at DESC").
 		Find(&orderModels).Error
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to find pending orders: %w", err)
 	}
-	
+
 	// Try to match by computing hash of each order's phone
 	for _, orderModel := range orderModels {
 		if matchesHashedPhone(orderModel.CustomerPhone, hashedPhone) {
 			fmt.Printf("[DEBUG] Hash match found: order %s, phone %s\n", orderModel.ID, orderModel.CustomerPhone)
-			
+
 			// Get order items with product names
 			items, err := r.fetchOrderItemsWithProductNames(ctx, orderModel.ID)
 			if err != nil {
 				return nil, err
 			}
-			
+
 			order := orderModel.ToDomain()
 			order.Items = items
 			return order, nil
 		}
 	}
-	
+
 	return nil, nil // No matching order found
 }
 
@@ -545,23 +545,23 @@ func matchesHashedPhone(phone, hashedPhone string) bool {
 	// Normalize phone - remove spaces and special chars
 	phone = strings.ReplaceAll(phone, " ", "")
 	phone = strings.ReplaceAll(phone, "-", "")
-	
+
 	// Try various phone formats that Kopo Kopo might use
 	formats := []string{
-		phone,                                    // As stored (e.g., 254708116809)
-		"+" + phone,                              // With + prefix (+254708116809)
-		strings.TrimPrefix(phone, "+"),           // Without + prefix
+		phone,                          // As stored (e.g., 254708116809)
+		"+" + phone,                    // With + prefix (+254708116809)
+		strings.TrimPrefix(phone, "+"), // Without + prefix
 	}
-	
+
 	// Also try with/without country code variations
 	digits := extractLast9Digits(phone)
 	if digits != "" {
-		formats = append(formats, digits)         // Just 9 digits (708116809)
-		formats = append(formats, "0"+digits)     // Local format (0708116809)
-		formats = append(formats, "254"+digits)   // With country code
-		formats = append(formats, "+254"+digits)  // E.164 format
+		formats = append(formats, digits)        // Just 9 digits (708116809)
+		formats = append(formats, "0"+digits)    // Local format (0708116809)
+		formats = append(formats, "254"+digits)  // With country code
+		formats = append(formats, "+254"+digits) // E.164 format
 	}
-	
+
 	for _, format := range formats {
 		hash := computeSHA256(format)
 		if hash == hashedPhone {
@@ -569,7 +569,7 @@ func matchesHashedPhone(phone, hashedPhone string) bool {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -781,12 +781,13 @@ func (r *userRepository) GetOrCreateByPhone(ctx context.Context, phone string) (
 
 // AdminUserModel represents the admin_users table structure
 type AdminUserModel struct {
-	ID          string    `gorm:"column:id;type:uuid;primaryKey;default:uuid_generate_v4()"`
-	PhoneNumber string    `gorm:"column:phone_number;type:varchar(20);not null;uniqueIndex"`
-	Name        string    `gorm:"column:name;type:varchar(255);not null"`
-	Role        string    `gorm:"column:role;type:varchar(20);not null;default:'MANAGER'"`
-	IsActive    bool      `gorm:"column:is_active;type:boolean;not null;default:true"`
-	CreatedAt   time.Time `gorm:"column:created_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
+	ID          string         `gorm:"column:id;type:uuid;primaryKey;default:uuid_generate_v4()"`
+	PhoneNumber string         `gorm:"column:phone_number;type:varchar(20);not null;uniqueIndex"`
+	Name        string         `gorm:"column:name;type:varchar(255);not null"`
+	Role        string         `gorm:"column:role;type:varchar(20);not null;default:'MANAGER'"`
+	PinHash     sql.NullString `gorm:"column:pin_hash;type:varchar(255)"`
+	IsActive    bool           `gorm:"column:is_active;type:boolean;not null;default:true"`
+	CreatedAt   time.Time      `gorm:"column:created_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
 }
 
 func (AdminUserModel) TableName() string {
@@ -795,11 +796,17 @@ func (AdminUserModel) TableName() string {
 
 // ToDomain converts AdminUserModel to core.AdminUser
 func (a *AdminUserModel) ToDomain() *core.AdminUser {
+	pinHash := ""
+	if a.PinHash.Valid {
+		pinHash = a.PinHash.String
+	}
+
 	return &core.AdminUser{
 		ID:          a.ID,
 		PhoneNumber: a.PhoneNumber,
 		Name:        a.Name,
 		Role:        a.Role,
+		PinHash:     pinHash,
 		IsActive:    a.IsActive,
 		CreatedAt:   a.CreatedAt,
 	}
@@ -817,13 +824,39 @@ func (r *adminUserRepository) GetByPhone(ctx context.Context, phone string) (*co
 	return adminModel.ToDomain(), nil
 }
 
+// GetActiveByRole retrieves active admin users by role.
+func (r *adminUserRepository) GetActiveByRole(ctx context.Context, role string) ([]*core.AdminUser, error) {
+	var adminModels []AdminUserModel
+	if err := r.db.WithContext(ctx).Table("admin_users").
+		Where("role = ? AND is_active = ?", role, true).
+		Find(&adminModels).Error; err != nil {
+		return nil, fmt.Errorf("failed to get admin users by role: %w", err)
+	}
+
+	users := make([]*core.AdminUser, len(adminModels))
+	for i := range adminModels {
+		users[i] = adminModels[i].ToDomain()
+	}
+
+	return users, nil
+}
+
 // Create creates a new admin user
 func (r *adminUserRepository) Create(ctx context.Context, user *core.AdminUser) error {
+	pinHash := sql.NullString{}
+	if user.PinHash != "" {
+		pinHash = sql.NullString{
+			String: user.PinHash,
+			Valid:  true,
+		}
+	}
+
 	adminModel := &AdminUserModel{
 		ID:          user.ID,
 		PhoneNumber: user.PhoneNumber,
 		Name:        user.Name,
 		Role:        user.Role,
+		PinHash:     pinHash,
 		IsActive:    user.IsActive,
 		CreatedAt:   user.CreatedAt,
 	}

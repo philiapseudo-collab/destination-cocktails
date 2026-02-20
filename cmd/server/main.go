@@ -40,14 +40,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse Redis URL: %v", err)
 	}
-	
+
 	// Override password if specified separately
 	if cfg.RedisPassword != "" {
 		redisOpts.Password = cfg.RedisPassword
 	}
-	
+
 	redisClient := goredis.NewClient(redisOpts)
-	
+
 	// Test Redis connection
 	if err := redisClient.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
@@ -159,19 +159,26 @@ func main() {
 	// Dashboard API - Auth (public)
 	app.Post("/api/admin/auth/request-otp", dashboardHandler.RequestOTP)
 	app.Post("/api/admin/auth/verify-otp", dashboardHandler.VerifyOTP)
+	app.Post("/api/admin/auth/bartender-login", dashboardHandler.BartenderLogin)
 	app.Post("/api/admin/auth/logout", dashboardHandler.Logout)
 
 	// Dashboard API - Protected routes
 	admin := app.Group("/api/admin", middleware.AuthMiddleware(dashboardService))
-	admin.Get("/auth/me", dashboardHandler.GetMe)
-	admin.Get("/products", dashboardHandler.GetProducts)
-	admin.Patch("/products/:id/stock", dashboardHandler.UpdateStock)
-	admin.Patch("/products/:id/price", dashboardHandler.UpdatePrice)
-	admin.Get("/orders", dashboardHandler.GetOrders)
-	admin.Get("/analytics/overview", dashboardHandler.GetAnalyticsOverview)
-	admin.Get("/analytics/revenue", dashboardHandler.GetRevenueTrend)
-	admin.Get("/analytics/top-products", dashboardHandler.GetTopProducts)
-	admin.Get("/events", dashboardHandler.SSEEvents)
+	admin.Get("/auth/me", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.GetMe)
+
+	// Manager-only routes (inventory + analytics).
+	admin.Get("/products", middleware.RequireRoles("MANAGER"), dashboardHandler.GetProducts)
+	admin.Patch("/products/:id/stock", middleware.RequireRoles("MANAGER"), dashboardHandler.UpdateStock)
+	admin.Patch("/products/:id/price", middleware.RequireRoles("MANAGER"), dashboardHandler.UpdatePrice)
+	admin.Get("/analytics/overview", middleware.RequireRoles("MANAGER"), dashboardHandler.GetAnalyticsOverview)
+	admin.Get("/analytics/revenue", middleware.RequireRoles("MANAGER"), dashboardHandler.GetRevenueTrend)
+	admin.Get("/analytics/top-products", middleware.RequireRoles("MANAGER"), dashboardHandler.GetTopProducts)
+
+	// Shared order-management routes (manager + bartender).
+	admin.Get("/orders", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.GetOrders)
+	admin.Post("/orders/:id/ready", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.MarkOrderReady)
+	admin.Post("/orders/:id/complete", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.MarkOrderComplete)
+	admin.Get("/events", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.SSEEvents)
 
 	// Start server
 	port := cfg.AppPort

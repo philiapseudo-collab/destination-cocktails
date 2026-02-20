@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/dumu-tech/destination-cocktails/internal/core"
 	"github.com/dumu-tech/destination-cocktails/internal/events"
 	"github.com/dumu-tech/destination-cocktails/internal/service"
 	"github.com/gofiber/fiber/v2"
@@ -89,13 +91,64 @@ func (h *DashboardHandler) VerifyOTP(c *fiber.Ctx) error {
 		Value:    token,
 		Expires:  time.Now().Add(7 * 24 * time.Hour),
 		HTTPOnly: true,
-		Secure:   true,  // Required for SameSite=None (HTTPS)
+		Secure:   true,   // Required for SameSite=None (HTTPS)
 		SameSite: "None", // Allow cross-origin cookie for dashboard
 	})
 
 	return c.JSON(fiber.Map{
 		"message": "login successful",
 		"token":   token,
+		"role":    core.AdminRoleManager,
+	})
+}
+
+// BartenderLogin handles bartender PIN login.
+// POST /api/admin/auth/bartender-login
+func (h *DashboardHandler) BartenderLogin(c *fiber.Ctx) error {
+	var req struct {
+		PIN string `json:"pin"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid request body",
+		})
+	}
+
+	if req.PIN == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "PIN is required",
+		})
+	}
+
+	token, err := h.dashboardService.VerifyBartenderPIN(c.Context(), req.PIN)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "PIN must be exactly 4 digits") {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": msg,
+			})
+		}
+
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "invalid PIN",
+		})
+	}
+
+	// Set JWT token in HTTP-only cookie
+	c.Cookie(&fiber.Cookie{
+		Name:     "auth_token",
+		Value:    token,
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		HTTPOnly: true,
+		Secure:   true,
+		SameSite: "None",
+	})
+
+	return c.JSON(fiber.Map{
+		"message": "login successful",
+		"token":   token,
+		"role":    core.AdminRoleBartender,
 	})
 }
 
@@ -232,6 +285,60 @@ func (h *DashboardHandler) GetOrders(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(orders)
+}
+
+// MarkOrderReady updates an order status from PAID to READY and notifies the customer.
+// POST /api/admin/orders/:id/ready
+func (h *DashboardHandler) MarkOrderReady(c *fiber.Ctx) error {
+	orderID := c.Params("id")
+	if orderID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "order ID is required",
+		})
+	}
+
+	if err := h.dashboardService.MarkOrderReady(c.Context(), orderID); err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(strings.ToLower(msg), "not found"):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": msg})
+		case strings.Contains(msg, "only PAID orders can be marked READY"):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "order marked as READY",
+	})
+}
+
+// MarkOrderComplete updates an order status from READY to COMPLETED.
+// POST /api/admin/orders/:id/complete
+func (h *DashboardHandler) MarkOrderComplete(c *fiber.Ctx) error {
+	orderID := c.Params("id")
+	if orderID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "order ID is required",
+		})
+	}
+
+	if err := h.dashboardService.MarkOrderCompleted(c.Context(), orderID); err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(strings.ToLower(msg), "not found"):
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": msg})
+		case strings.Contains(msg, "only READY orders can be marked COMPLETED"):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "order marked as COMPLETED",
+	})
 }
 
 // GetAnalyticsOverview retrieves dashboard overview metrics

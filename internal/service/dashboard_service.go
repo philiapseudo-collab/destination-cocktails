@@ -11,6 +11,7 @@ import (
 	"github.com/dumu-tech/destination-cocktails/internal/events"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // DashboardService handles dashboard business logic
@@ -50,10 +51,14 @@ func NewDashboardService(
 
 // RequestOTP generates and sends an OTP code via WhatsApp
 func (s *DashboardService) RequestOTP(ctx context.Context, phone string) error {
-	// Check if admin user exists and is active
-	isActive, err := s.adminUserRepo.IsActive(ctx, phone)
-	if err != nil || !isActive {
+	// OTP flow is manager-only.
+	adminUser, err := s.adminUserRepo.GetByPhone(ctx, phone)
+	if err != nil || !adminUser.IsActive {
 		return fmt.Errorf("unauthorized: admin user not found or inactive")
+	}
+
+	if adminUser.Role != core.AdminRoleManager {
+		return fmt.Errorf("unauthorized: OTP login is manager-only")
 	}
 
 	// Generate OTP code (hardcoded for test admin, random for others)
@@ -119,6 +124,17 @@ func (s *DashboardService) VerifyOTP(ctx context.Context, phone string, code str
 		return "", fmt.Errorf("admin user not found: %w", err)
 	}
 
+	if !adminUser.IsActive {
+		return "", fmt.Errorf("unauthorized: admin user inactive")
+	}
+
+	if adminUser.Role != core.AdminRoleManager {
+		return "", fmt.Errorf("unauthorized: OTP login is manager-only")
+	}
+
+	// OTP login always issues MANAGER role per RBAC contract.
+	adminUser.Role = core.AdminRoleManager
+
 	// Generate JWT token
 	token, err := s.generateJWT(adminUser)
 	if err != nil {
@@ -126,6 +142,91 @@ func (s *DashboardService) VerifyOTP(ctx context.Context, phone string, code str
 	}
 
 	return token, nil
+}
+
+// VerifyBartenderPIN verifies a bartender PIN and returns a JWT token.
+func (s *DashboardService) VerifyBartenderPIN(ctx context.Context, pin string) (string, error) {
+	if !isValidFourDigitPIN(pin) {
+		return "", fmt.Errorf("PIN must be exactly 4 digits")
+	}
+
+	bartenders, err := s.adminUserRepo.GetActiveByRole(ctx, core.AdminRoleBartender)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch bartender accounts: %w", err)
+	}
+
+	for _, bartender := range bartenders {
+		if bartender.PinHash == "" {
+			continue
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(bartender.PinHash), []byte(pin)); err == nil {
+			// PIN login always issues BARTENDER role.
+			bartender.Role = core.AdminRoleBartender
+			token, tokenErr := s.generateJWT(bartender)
+			if tokenErr != nil {
+				return "", fmt.Errorf("failed to generate token: %w", tokenErr)
+			}
+			return token, nil
+		}
+	}
+
+	return "", fmt.Errorf("invalid PIN")
+}
+
+// MarkOrderReady transitions an order from PAID to READY and notifies the customer.
+func (s *DashboardService) MarkOrderReady(ctx context.Context, orderID string) error {
+	order, err := s.orderRepo.GetByID(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to get order: %w", err)
+	}
+
+	if order.Status == core.OrderStatusReady {
+		return nil
+	}
+
+	if order.Status != core.OrderStatusPaid {
+		return fmt.Errorf("only PAID orders can be marked READY")
+	}
+
+	if err := s.orderRepo.UpdateStatus(ctx, orderID, core.OrderStatusReady); err != nil {
+		return fmt.Errorf("failed to mark order ready: %w", err)
+	}
+
+	// Keep in-memory order aligned for SSE payload.
+	order.Status = core.OrderStatusReady
+
+	if err := s.whatsappGateway.SendText(ctx, order.CustomerPhone, "🍸 *Order Ready!* Your drinks are waiting at the bar. Please show this screen to collect."); err != nil {
+		return fmt.Errorf("order marked ready but failed to notify customer: %w", err)
+	}
+
+	s.eventBus.PublishOrderReady(order)
+
+	return nil
+}
+
+// MarkOrderCompleted transitions an order from READY to COMPLETED and emits SSE.
+func (s *DashboardService) MarkOrderCompleted(ctx context.Context, orderID string) error {
+	order, err := s.orderRepo.GetByID(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to get order: %w", err)
+	}
+
+	if order.Status == core.OrderStatusCompleted {
+		return nil
+	}
+
+	if order.Status != core.OrderStatusReady {
+		return fmt.Errorf("only READY orders can be marked COMPLETED")
+	}
+
+	if err := s.orderRepo.UpdateStatus(ctx, orderID, core.OrderStatusCompleted); err != nil {
+		return fmt.Errorf("failed to mark order completed: %w", err)
+	}
+
+	s.eventBus.PublishOrderCompleted(orderID)
+
+	return nil
 }
 
 // GetProducts retrieves all products
@@ -195,6 +296,20 @@ func generateOTP() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+func isValidFourDigitPIN(pin string) bool {
+	if len(pin) != 4 {
+		return false
+	}
+
+	for _, r := range pin {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // generateJWT generates a JWT token for an admin user
