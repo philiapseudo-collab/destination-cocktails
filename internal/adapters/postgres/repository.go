@@ -445,15 +445,24 @@ func (r *orderRepository) GetCompletedHistory(ctx context.Context, pickupCode st
 	}
 
 	if phone != "" {
-		patterns := buildPhoneSearchPatterns(phone)
-		if len(patterns) > 0 {
-			query = query.Where(func(db *gorm.DB) *gorm.DB {
-				filter := db.Where("customer_phone ILIKE ?", "%"+patterns[0]+"%")
-				for _, pattern := range patterns[1:] {
-					filter = filter.Or("customer_phone ILIKE ?", "%"+pattern+"%")
-				}
-				return filter
-			})
+		phoneDigits := extractDigits(phone)
+		if phoneDigits != "" {
+			// Kenya phone equivalence: 2547xxxxxxxx, +2547xxxxxxxx, 07xxxxxxxx, 01xxxxxxxx
+			// all map to the same last 9 digits for matching.
+			if len(phoneDigits) >= 9 {
+				localDigits := extractLast9Digits(phoneDigits)
+				query = query.Where(
+					"RIGHT(regexp_replace(customer_phone, '[^0-9]', '', 'g'), 9) = ?",
+					localDigits,
+				)
+			} else {
+				query = query.Where(
+					"regexp_replace(customer_phone, '[^0-9]', '', 'g') LIKE ?",
+					"%"+phoneDigits+"%",
+				)
+			}
+		} else {
+			query = query.Where("customer_phone ILIKE ?", "%"+strings.TrimSpace(phone)+"%")
 		}
 	}
 
