@@ -973,6 +973,7 @@ func (r *otpRepository) CleanupExpired(ctx context.Context) error {
 func (r *analyticsRepository) GetOverview(ctx context.Context) (*core.Analytics, error) {
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	settledStatuses := []string{"PAID", "READY", "COMPLETED"}
 
 	var analytics core.Analytics
 
@@ -984,7 +985,7 @@ func (r *analyticsRepository) GetOverview(ctx context.Context) (*core.Analytics,
 	var todayStats TodayStats
 	if err := r.db.WithContext(ctx).Table("orders").
 		Select("COALESCE(SUM(total_amount), 0) as revenue, COUNT(*) as order_count").
-		Where("status = ? AND created_at >= ?", "PAID", startOfDay).
+		Where("status IN ? AND created_at >= ?", settledStatuses, startOfDay).
 		Scan(&todayStats).Error; err != nil {
 		return nil, fmt.Errorf("failed to get today's stats: %w", err)
 	}
@@ -1007,7 +1008,7 @@ func (r *analyticsRepository) GetOverview(ctx context.Context) (*core.Analytics,
 		Select("products.name as product_name, SUM(order_items.quantity) as quantity").
 		Joins("JOIN orders ON order_items.order_id = orders.id").
 		Joins("JOIN products ON order_items.product_id = products.id").
-		Where("orders.status = ? AND orders.created_at >= ?", "PAID", startOfDay).
+		Where("orders.status IN ? AND orders.created_at >= ?", settledStatuses, startOfDay).
 		Group("products.name").
 		Order("quantity DESC").
 		Limit(1).
@@ -1026,6 +1027,7 @@ func (r *analyticsRepository) GetOverview(ctx context.Context) (*core.Analytics,
 // GetRevenueTrend retrieves daily revenue data for the specified number of days
 func (r *analyticsRepository) GetRevenueTrend(ctx context.Context, days int) ([]*core.RevenueTrend, error) {
 	startDate := time.Now().AddDate(0, 0, -days)
+	settledStatuses := []string{"PAID", "READY", "COMPLETED"}
 
 	type TrendResult struct {
 		Date       string
@@ -1036,7 +1038,7 @@ func (r *analyticsRepository) GetRevenueTrend(ctx context.Context, days int) ([]
 	var results []TrendResult
 	if err := r.db.WithContext(ctx).Table("orders").
 		Select("DATE(created_at) as date, COALESCE(SUM(total_amount), 0) as revenue, COUNT(*) as order_count").
-		Where("status = ? AND created_at >= ?", "PAID", startDate).
+		Where("status IN ? AND created_at >= ?", settledStatuses, startDate).
 		Group("DATE(created_at)").
 		Order("date ASC").
 		Scan(&results).Error; err != nil {
@@ -1059,6 +1061,7 @@ func (r *analyticsRepository) GetRevenueTrend(ctx context.Context, days int) ([]
 func (r *analyticsRepository) GetTopProducts(ctx context.Context, limit int) ([]*core.TopProduct, error) {
 	// Get data for last 30 days
 	startDate := time.Now().AddDate(0, 0, -30)
+	settledStatuses := []string{"PAID", "READY", "COMPLETED"}
 
 	type ProductResult struct {
 		ProductName  string
@@ -1071,7 +1074,7 @@ func (r *analyticsRepository) GetTopProducts(ctx context.Context, limit int) ([]
 		Select("products.name as product_name, SUM(order_items.quantity) as quantity_sold, SUM(order_items.quantity * order_items.price_at_time) as revenue").
 		Joins("JOIN orders ON order_items.order_id = orders.id").
 		Joins("JOIN products ON order_items.product_id = products.id").
-		Where("orders.status = ? AND orders.created_at >= ?", "PAID", startDate).
+		Where("orders.status IN ? AND orders.created_at >= ?", settledStatuses, startDate).
 		Group("products.name").
 		Order("revenue DESC").
 		Limit(limit).
