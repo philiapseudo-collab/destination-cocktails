@@ -150,20 +150,28 @@ func (s *DashboardService) VerifyBartenderPIN(ctx context.Context, pin string) (
 		return "", fmt.Errorf("PIN must be exactly 4 digits")
 	}
 
-	bartenders, err := s.adminUserRepo.GetActiveByRole(ctx, core.AdminRoleBartender)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch bartender accounts: %w", err)
+	// Allow PIN login for dedicated bartenders and manager accounts that have a PIN configured.
+	candidatesByID := make(map[string]*core.AdminUser)
+	for _, role := range []string{core.AdminRoleBartender, core.AdminRoleManager} {
+		users, err := s.adminUserRepo.GetActiveByRole(ctx, role)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch PIN-enabled accounts: %w", err)
+		}
+
+		for _, user := range users {
+			candidatesByID[user.ID] = user
+		}
 	}
 
-	for _, bartender := range bartenders {
-		if bartender.PinHash == "" {
+	for _, user := range candidatesByID {
+		if user.PinHash == "" {
 			continue
 		}
 
-		if err := bcrypt.CompareHashAndPassword([]byte(bartender.PinHash), []byte(pin)); err == nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PinHash), []byte(pin)); err == nil {
 			// PIN login always issues BARTENDER role.
-			bartender.Role = core.AdminRoleBartender
-			token, tokenErr := s.generateJWT(bartender)
+			user.Role = core.AdminRoleBartender
+			token, tokenErr := s.generateJWT(user)
 			if tokenErr != nil {
 				return "", fmt.Errorf("failed to generate token: %w", tokenErr)
 			}
