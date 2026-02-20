@@ -445,7 +445,16 @@ func (r *orderRepository) GetCompletedHistory(ctx context.Context, pickupCode st
 	}
 
 	if phone != "" {
-		query = query.Where("customer_phone ILIKE ?", "%"+phone+"%")
+		patterns := buildPhoneSearchPatterns(phone)
+		if len(patterns) > 0 {
+			query = query.Where(func(db *gorm.DB) *gorm.DB {
+				filter := db.Where("customer_phone ILIKE ?", "%"+patterns[0]+"%")
+				for _, pattern := range patterns[1:] {
+					filter = filter.Or("customer_phone ILIKE ?", "%"+pattern+"%")
+				}
+				return filter
+			})
+		}
 	}
 
 	if limit <= 0 || limit > 500 {
@@ -506,17 +515,63 @@ func (r *orderRepository) FindPendingByPhoneAndAmount(ctx context.Context, phone
 	return order, nil
 }
 
-// extractLast9Digits extracts the last 9 digits from a phone number
-// Handles formats like: 0712345678, +254712345678, 254712345678
-func extractLast9Digits(phone string) string {
-	// Remove all non-digit characters
-	digits := ""
-	for _, char := range phone {
+// buildPhoneSearchPatterns expands input phone search across equivalent KE formats.
+// Example: 0708116809 -> [0708116809, 708116809, 254708116809, +254708116809]
+func buildPhoneSearchPatterns(phone string) []string {
+	input := strings.TrimSpace(phone)
+	if input == "" {
+		return nil
+	}
+
+	patterns := make([]string, 0, 6)
+	seen := make(map[string]struct{}, 6)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		patterns = append(patterns, value)
+	}
+
+	add(input)
+
+	digits := extractDigits(input)
+	add(digits)
+
+	local := extractLast9Digits(digits)
+	if local != "" {
+		add(local)
+		add("0" + local)
+		add("254" + local)
+		add("+254" + local)
+	}
+
+	if strings.HasPrefix(digits, "254") && len(digits) > 3 {
+		add("0" + digits[3:])
+	}
+
+	return patterns
+}
+
+// extractDigits keeps only numeric characters in a string.
+func extractDigits(input string) string {
+	var builder strings.Builder
+	builder.Grow(len(input))
+	for _, char := range input {
 		if char >= '0' && char <= '9' {
-			digits += string(char)
+			builder.WriteRune(char)
 		}
 	}
-	// Return last 9 digits
+	return builder.String()
+}
+
+// extractLast9Digits extracts the last 9 digits from a phone number.
+func extractLast9Digits(phone string) string {
+	digits := extractDigits(phone)
 	if len(digits) >= 9 {
 		return digits[len(digits)-9:]
 	}
