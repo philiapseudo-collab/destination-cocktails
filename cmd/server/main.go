@@ -176,6 +176,7 @@ func main() {
 
 	// Shared order-management routes (manager + bartender).
 	admin.Get("/orders", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.GetOrders)
+	admin.Get("/orders/history", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.GetOrderHistory)
 	admin.Post("/orders/:id/ready", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.MarkOrderReady)
 	admin.Post("/orders/:id/complete", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.MarkOrderComplete)
 	admin.Get("/events", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.SSEEvents)

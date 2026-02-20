@@ -287,6 +287,28 @@ func (h *DashboardHandler) GetOrders(c *fiber.Ctx) error {
 	return c.JSON(orders)
 }
 
+// GetOrderHistory retrieves completed orders for bartender/manager dispute checks.
+// GET /api/admin/orders/history?pickup_code=0031&phone=2547&limit=50
+func (h *DashboardHandler) GetOrderHistory(c *fiber.Ctx) error {
+	pickupCode := strings.TrimSpace(c.Query("pickup_code", ""))
+	phone := strings.TrimSpace(c.Query("phone", ""))
+	limitStr := c.Query("limit", "100")
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		limit = 100
+	}
+
+	orders, err := h.dashboardService.GetOrderHistory(c.Context(), pickupCode, phone, limit)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to get order history",
+		})
+	}
+
+	return c.JSON(orders)
+}
+
 // MarkOrderReady updates an order status from PAID to READY and notifies the customer.
 // POST /api/admin/orders/:id/ready
 func (h *DashboardHandler) MarkOrderReady(c *fiber.Ctx) error {
@@ -297,7 +319,8 @@ func (h *DashboardHandler) MarkOrderReady(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.dashboardService.MarkOrderReady(c.Context(), orderID); err != nil {
+	actorUserID, _ := c.Locals("user_id").(string)
+	if err := h.dashboardService.MarkOrderReady(c.Context(), orderID, actorUserID); err != nil {
 		msg := err.Error()
 		switch {
 		case strings.Contains(strings.ToLower(msg), "not found"):
@@ -324,7 +347,8 @@ func (h *DashboardHandler) MarkOrderComplete(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := h.dashboardService.MarkOrderCompleted(c.Context(), orderID); err != nil {
+	actorUserID, _ := c.Locals("user_id").(string)
+	if err := h.dashboardService.MarkOrderCompleted(c.Context(), orderID, actorUserID); err != nil {
 		msg := err.Error()
 		switch {
 		case strings.Contains(strings.ToLower(msg), "not found"):

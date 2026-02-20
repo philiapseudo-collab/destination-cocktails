@@ -183,7 +183,7 @@ func (s *DashboardService) VerifyBartenderPIN(ctx context.Context, pin string) (
 }
 
 // MarkOrderReady transitions an order from PAID to READY and notifies the customer.
-func (s *DashboardService) MarkOrderReady(ctx context.Context, orderID string) error {
+func (s *DashboardService) MarkOrderReady(ctx context.Context, orderID string, actorUserID string) error {
 	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return fmt.Errorf("failed to get order: %w", err)
@@ -197,7 +197,7 @@ func (s *DashboardService) MarkOrderReady(ctx context.Context, orderID string) e
 		return fmt.Errorf("only PAID orders can be marked READY")
 	}
 
-	if err := s.orderRepo.UpdateStatus(ctx, orderID, core.OrderStatusReady); err != nil {
+	if err := s.orderRepo.UpdateStatusWithActor(ctx, orderID, core.OrderStatusReady, actorUserID); err != nil {
 		return fmt.Errorf("failed to mark order ready: %w", err)
 	}
 
@@ -214,7 +214,7 @@ func (s *DashboardService) MarkOrderReady(ctx context.Context, orderID string) e
 }
 
 // MarkOrderCompleted transitions an order from READY to COMPLETED and emits SSE.
-func (s *DashboardService) MarkOrderCompleted(ctx context.Context, orderID string) error {
+func (s *DashboardService) MarkOrderCompleted(ctx context.Context, orderID string, actorUserID string) error {
 	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return fmt.Errorf("failed to get order: %w", err)
@@ -228,7 +228,7 @@ func (s *DashboardService) MarkOrderCompleted(ctx context.Context, orderID strin
 		return fmt.Errorf("only READY orders can be marked COMPLETED")
 	}
 
-	if err := s.orderRepo.UpdateStatus(ctx, orderID, core.OrderStatusCompleted); err != nil {
+	if err := s.orderRepo.UpdateStatusWithActor(ctx, orderID, core.OrderStatusCompleted, actorUserID); err != nil {
 		return fmt.Errorf("failed to mark order completed: %w", err)
 	}
 
@@ -269,6 +269,11 @@ func (s *DashboardService) UpdatePrice(ctx context.Context, productID string, pr
 // GetOrders retrieves orders with optional filters
 func (s *DashboardService) GetOrders(ctx context.Context, status string, limit int) ([]*core.Order, error) {
 	return s.orderRepo.GetAllWithFilters(ctx, status, limit)
+}
+
+// GetOrderHistory retrieves completed orders for dispute lookup.
+func (s *DashboardService) GetOrderHistory(ctx context.Context, pickupCode string, phone string, limit int) ([]*core.Order, error) {
+	return s.orderRepo.GetCompletedHistory(ctx, pickupCode, phone, limit)
 }
 
 // GetAnalyticsOverview retrieves dashboard overview metrics

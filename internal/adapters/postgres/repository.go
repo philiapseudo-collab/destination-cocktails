@@ -361,12 +361,33 @@ func (r *orderRepository) GetByPhone(ctx context.Context, phone string) ([]*core
 
 // UpdateStatus updates the status of an order
 func (r *orderRepository) UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error {
+	return r.UpdateStatusWithActor(ctx, id, status, "")
+}
+
+// UpdateStatusWithActor updates order status and records audit metadata for bartender workflow actions.
+func (r *orderRepository) UpdateStatusWithActor(ctx context.Context, id string, status core.OrderStatus, actorUserID string) error {
 	result := r.db.WithContext(ctx).Table("orders").
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":     string(status),
-			"updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
-		})
+		Where("id = ?", id)
+
+	updates := map[string]interface{}{
+		"status":     string(status),
+		"updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
+	}
+
+	switch status {
+	case core.OrderStatusReady:
+		updates["ready_at"] = gorm.Expr("CURRENT_TIMESTAMP")
+		if actorUserID != "" {
+			updates["ready_by_admin_user_id"] = actorUserID
+		}
+	case core.OrderStatusCompleted:
+		updates["completed_at"] = gorm.Expr("CURRENT_TIMESTAMP")
+		if actorUserID != "" {
+			updates["completed_by_admin_user_id"] = actorUserID
+		}
+	}
+
+	result = result.Updates(updates)
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to update order status: %w", result.Error)
@@ -407,6 +428,45 @@ func (r *orderRepository) GetAllWithFilters(ctx context.Context, status string, 
 		}
 		order.Items = items
 
+		orders[i] = order
+	}
+
+	return orders, nil
+}
+
+// GetCompletedHistory retrieves completed orders for dispute/history review with optional filters.
+func (r *orderRepository) GetCompletedHistory(ctx context.Context, pickupCode string, phone string, limit int) ([]*core.Order, error) {
+	query := r.db.WithContext(ctx).Table("orders").
+		Where("status = ?", string(core.OrderStatusCompleted)).
+		Order("completed_at DESC NULLS LAST, created_at DESC")
+
+	if pickupCode != "" {
+		query = query.Where("pickup_code ILIKE ?", "%"+pickupCode+"%")
+	}
+
+	if phone != "" {
+		query = query.Where("customer_phone ILIKE ?", "%"+phone+"%")
+	}
+
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query = query.Limit(limit)
+
+	var orderModels []OrderModel
+	if err := query.Find(&orderModels).Error; err != nil {
+		return nil, fmt.Errorf("failed to get order history: %w", err)
+	}
+
+	orders := make([]*core.Order, len(orderModels))
+	for i, om := range orderModels {
+		order := om.ToDomain()
+
+		items, err := r.fetchOrderItemsWithProductNames(ctx, om.ID)
+		if err != nil {
+			return nil, err
+		}
+		order.Items = items
 		orders[i] = order
 	}
 
@@ -620,17 +680,21 @@ func (p *ProductModel) ToDomain() *core.Product {
 
 // OrderModel represents the order table structure
 type OrderModel struct {
-	ID            string    `gorm:"column:id;type:uuid;primaryKey;default:uuid_generate_v4()"`
-	UserID        string    `gorm:"column:user_id;type:uuid;not null"`
-	CustomerPhone string    `gorm:"column:customer_phone;type:varchar(20);not null;index"`
-	TableNumber   string    `gorm:"column:table_number;type:varchar(20)"`
-	TotalAmount   float64   `gorm:"column:total_amount;type:decimal(10,2);not null"`
-	Status        string    `gorm:"column:status;type:varchar(20);not null;default:'PENDING';index"`
-	PaymentMethod string    `gorm:"column:payment_method;type:varchar(20)"`
-	PaymentRef    string    `gorm:"column:payment_reference;type:varchar(255)"`
-	PickupCode    string    `gorm:"column:pickup_code;type:varchar(4);index"` // 4-digit pickup code for bar staff
-	CreatedAt     time.Time `gorm:"column:created_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt     time.Time `gorm:"column:updated_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
+	ID                     string         `gorm:"column:id;type:uuid;primaryKey;default:uuid_generate_v4()"`
+	UserID                 string         `gorm:"column:user_id;type:uuid;not null"`
+	CustomerPhone          string         `gorm:"column:customer_phone;type:varchar(20);not null;index"`
+	TableNumber            string         `gorm:"column:table_number;type:varchar(20)"`
+	TotalAmount            float64        `gorm:"column:total_amount;type:decimal(10,2);not null"`
+	Status                 string         `gorm:"column:status;type:varchar(20);not null;default:'PENDING';index"`
+	PaymentMethod          string         `gorm:"column:payment_method;type:varchar(20)"`
+	PaymentRef             string         `gorm:"column:payment_reference;type:varchar(255)"`
+	PickupCode             string         `gorm:"column:pickup_code;type:varchar(4);index"` // 4-digit pickup code for bar staff
+	ReadyAt                sql.NullTime   `gorm:"column:ready_at;type:timestamp"`
+	ReadyByAdminUserID     sql.NullString `gorm:"column:ready_by_admin_user_id;type:uuid"`
+	CompletedAt            sql.NullTime   `gorm:"column:completed_at;type:timestamp"`
+	CompletedByAdminUserID sql.NullString `gorm:"column:completed_by_admin_user_id;type:uuid"`
+	CreatedAt              time.Time      `gorm:"column:created_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt              time.Time      `gorm:"column:updated_at;type:timestamp;not null;default:CURRENT_TIMESTAMP"`
 }
 
 func (OrderModel) TableName() string {
@@ -639,34 +703,96 @@ func (OrderModel) TableName() string {
 
 // OrderModelFromDomain creates OrderModel from core.Order
 func OrderModelFromDomain(order *core.Order) *OrderModel {
+	readyAt := sql.NullTime{}
+	if order.ReadyAt != nil {
+		readyAt = sql.NullTime{
+			Time:  *order.ReadyAt,
+			Valid: true,
+		}
+	}
+
+	completedAt := sql.NullTime{}
+	if order.CompletedAt != nil {
+		completedAt = sql.NullTime{
+			Time:  *order.CompletedAt,
+			Valid: true,
+		}
+	}
+
+	readyBy := sql.NullString{}
+	if order.ReadyByUserID != "" {
+		readyBy = sql.NullString{
+			String: order.ReadyByUserID,
+			Valid:  true,
+		}
+	}
+
+	completedBy := sql.NullString{}
+	if order.CompletedByUserID != "" {
+		completedBy = sql.NullString{
+			String: order.CompletedByUserID,
+			Valid:  true,
+		}
+	}
+
 	return &OrderModel{
-		ID:            order.ID,
-		UserID:        order.UserID,
-		CustomerPhone: order.CustomerPhone,
-		TableNumber:   order.TableNumber,
-		TotalAmount:   order.TotalAmount,
-		Status:        string(order.Status),
-		PaymentMethod: order.PaymentMethod,
-		PaymentRef:    order.PaymentRef,
-		PickupCode:    order.PickupCode,
-		CreatedAt:     order.CreatedAt,
+		ID:                     order.ID,
+		UserID:                 order.UserID,
+		CustomerPhone:          order.CustomerPhone,
+		TableNumber:            order.TableNumber,
+		TotalAmount:            order.TotalAmount,
+		Status:                 string(order.Status),
+		PaymentMethod:          order.PaymentMethod,
+		PaymentRef:             order.PaymentRef,
+		PickupCode:             order.PickupCode,
+		ReadyAt:                readyAt,
+		ReadyByAdminUserID:     readyBy,
+		CompletedAt:            completedAt,
+		CompletedByAdminUserID: completedBy,
+		CreatedAt:              order.CreatedAt,
 	}
 }
 
 // ToDomain converts OrderModel to core.Order
 func (o *OrderModel) ToDomain() *core.Order {
+	var readyAt *time.Time
+	if o.ReadyAt.Valid {
+		t := o.ReadyAt.Time
+		readyAt = &t
+	}
+
+	var completedAt *time.Time
+	if o.CompletedAt.Valid {
+		t := o.CompletedAt.Time
+		completedAt = &t
+	}
+
+	readyBy := ""
+	if o.ReadyByAdminUserID.Valid {
+		readyBy = o.ReadyByAdminUserID.String
+	}
+
+	completedBy := ""
+	if o.CompletedByAdminUserID.Valid {
+		completedBy = o.CompletedByAdminUserID.String
+	}
+
 	return &core.Order{
-		ID:            o.ID,
-		UserID:        o.UserID,
-		CustomerPhone: o.CustomerPhone,
-		TableNumber:   o.TableNumber,
-		TotalAmount:   o.TotalAmount,
-		Status:        core.OrderStatus(o.Status),
-		PaymentMethod: o.PaymentMethod,
-		PaymentRef:    o.PaymentRef,
-		PickupCode:    o.PickupCode,
-		CreatedAt:     o.CreatedAt,
-		Items:         []core.OrderItem{}, // Will be populated separately
+		ID:                o.ID,
+		UserID:            o.UserID,
+		CustomerPhone:     o.CustomerPhone,
+		TableNumber:       o.TableNumber,
+		TotalAmount:       o.TotalAmount,
+		Status:            core.OrderStatus(o.Status),
+		PaymentMethod:     o.PaymentMethod,
+		PaymentRef:        o.PaymentRef,
+		PickupCode:        o.PickupCode,
+		ReadyAt:           readyAt,
+		ReadyByUserID:     readyBy,
+		CompletedAt:       completedAt,
+		CompletedByUserID: completedBy,
+		CreatedAt:         o.CreatedAt,
+		Items:             []core.OrderItem{}, // Will be populated separately
 	}
 }
 

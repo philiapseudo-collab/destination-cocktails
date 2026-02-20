@@ -16,17 +16,21 @@ type Product struct {
 
 // Order represents a customer order
 type Order struct {
-	ID            string      `json:"id"`
-	UserID        string      `json:"user_id"`        // FK to users.id
-	CustomerPhone string      `json:"customer_phone"` // Denormalized for performance
-	TableNumber   string      `json:"table_number"`
-	TotalAmount   float64     `json:"total_amount"`
-	Status        OrderStatus `json:"status"`
-	PaymentMethod string      `json:"payment_method"`
-	PaymentRef    string      `json:"payment_reference"`
-	PickupCode    string      `json:"pickup_code"` // 4-digit code for bar staff
-	Items         []OrderItem `json:"items"`
-	CreatedAt     time.Time   `json:"created_at"`
+	ID                string      `json:"id"`
+	UserID            string      `json:"user_id"`        // FK to users.id
+	CustomerPhone     string      `json:"customer_phone"` // Denormalized for performance
+	TableNumber       string      `json:"table_number"`
+	TotalAmount       float64     `json:"total_amount"`
+	Status            OrderStatus `json:"status"`
+	PaymentMethod     string      `json:"payment_method"`
+	PaymentRef        string      `json:"payment_reference"`
+	PickupCode        string      `json:"pickup_code"` // 4-digit code for bar staff
+	ReadyAt           *time.Time  `json:"ready_at,omitempty"`
+	ReadyByUserID     string      `json:"ready_by_user_id,omitempty"`
+	CompletedAt       *time.Time  `json:"completed_at,omitempty"`
+	CompletedByUserID string      `json:"completed_by_user_id,omitempty"`
+	Items             []OrderItem `json:"items"`
+	CreatedAt         time.Time   `json:"created_at"`
 }
 
 // OrderItem represents a single item in an order

@@ -20,7 +20,9 @@ type OrderRepository interface {
 	GetByUserID(ctx context.Context, userID string) ([]*Order, error)
 	GetByPhone(ctx context.Context, phone string) ([]*Order, error)
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
+	UpdateStatusWithActor(ctx context.Context, id string, status OrderStatus, actorUserID string) error
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
+	GetCompletedHistory(ctx context.Context, pickupCode string, phone string, limit int) ([]*Order, error)
 	FindPendingByPhoneAndAmount(ctx context.Context, phone string, amount float64) (*Order, error)
 	FindPendingByHashedPhoneAndAmount(ctx context.Context, hashedPhone string, amount float64) (*Order, error) // Match by hashed phone from buygoods webhooks
 	FindPendingByAmount(ctx context.Context, amount float64) (*Order, error)                                   // Fallback when phone unavailable
