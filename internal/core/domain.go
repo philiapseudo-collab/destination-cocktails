@@ -142,3 +142,19 @@ type TopProduct struct {
 	QuantitySold int     `json:"quantity_sold"`
 	Revenue      float64 `json:"revenue"`
 }
+
+// SalesReport represents an exportable sales report for a time range.
+type SalesReport struct {
+	Title               string    `json:"title"`
+	DateLabel           string    `json:"date_label"`
+	Timezone            string    `json:"timezone"`
+	BusinessDayStart    string    `json:"business_day_start"`
+	StartAt             time.Time `json:"start_at"`
+	EndAt               time.Time `json:"end_at"`
+	GeneratedAt         time.Time `json:"generated_at"`
+	TotalRevenue        float64   `json:"total_revenue"`
+	OrderCount          int       `json:"order_count"`
+	AverageOrderValue   float64   `json:"average_order_value"`
+	SettledStatusFilter []string  `json:"settled_status_filter"`
+	Orders              []Order   `json:"orders"`
+}

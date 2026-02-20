@@ -138,6 +138,7 @@ func main() {
 		AllowOrigins:     allowedOrigin,
 		AllowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
 		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+		ExposeHeaders:    "Content-Disposition",
 		AllowCredentials: allowedOrigin != "*",
 	}))
 
@@ -173,6 +174,8 @@ func main() {
 	admin.Get("/analytics/overview", middleware.RequireRoles("MANAGER"), dashboardHandler.GetAnalyticsOverview)
 	admin.Get("/analytics/revenue", middleware.RequireRoles("MANAGER"), dashboardHandler.GetRevenueTrend)
 	admin.Get("/analytics/top-products", middleware.RequireRoles("MANAGER"), dashboardHandler.GetTopProducts)
+	admin.Get("/analytics/reports/daily", middleware.RequireRoles("MANAGER"), dashboardHandler.ExportDailySalesReportPDF)
+	admin.Get("/analytics/reports/last-30-days", middleware.RequireRoles("MANAGER"), dashboardHandler.ExportLast30DaysSalesReportPDF)
 
 	// Shared order-management routes (manager + bartender).
 	admin.Get("/orders", middleware.RequireRoles("MANAGER", "BARTENDER"), dashboardHandler.GetOrders)

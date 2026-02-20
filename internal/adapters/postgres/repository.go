@@ -359,6 +359,41 @@ func (r *orderRepository) GetByPhone(ctx context.Context, phone string) ([]*core
 	return orders, nil
 }
 
+// GetByDateRangeAndStatuses retrieves orders for a specific time window and optional statuses.
+func (r *orderRepository) GetByDateRangeAndStatuses(ctx context.Context, start time.Time, end time.Time, statuses []core.OrderStatus) ([]*core.Order, error) {
+	query := r.db.WithContext(ctx).Table("orders").
+		Where("created_at >= ? AND created_at < ?", start, end).
+		Order("created_at ASC")
+
+	if len(statuses) > 0 {
+		statusValues := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			statusValues = append(statusValues, string(status))
+		}
+		query = query.Where("status IN ?", statusValues)
+	}
+
+	var orderModels []OrderModel
+	if err := query.Find(&orderModels).Error; err != nil {
+		return nil, fmt.Errorf("failed to get orders by date range: %w", err)
+	}
+
+	orders := make([]*core.Order, len(orderModels))
+	for i, om := range orderModels {
+		order := om.ToDomain()
+
+		items, err := r.fetchOrderItemsWithProductNames(ctx, om.ID)
+		if err != nil {
+			return nil, err
+		}
+		order.Items = items
+
+		orders[i] = order
+	}
+
+	return orders, nil
+}
+
 // UpdateStatus updates the status of an order
 func (r *orderRepository) UpdateStatus(ctx context.Context, id string, status core.OrderStatus) error {
 	return r.UpdateStatusWithActor(ctx, id, status, "")

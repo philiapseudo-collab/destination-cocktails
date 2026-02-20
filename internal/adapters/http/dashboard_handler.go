@@ -416,6 +416,43 @@ func (h *DashboardHandler) GetTopProducts(c *fiber.Ctx) error {
 	return c.JSON(products)
 }
 
+// ExportDailySalesReportPDF exports a single operational business-day sales report as PDF.
+// GET /api/admin/analytics/reports/daily?date=YYYY-MM-DD
+func (h *DashboardHandler) ExportDailySalesReportPDF(c *fiber.Ctx) error {
+	dateParam := strings.TrimSpace(c.Query("date", ""))
+
+	pdfBytes, filename, err := h.dashboardService.GenerateDailySalesReportPDF(c.Context(), dateParam)
+	if err != nil {
+		status := fiber.StatusInternalServerError
+		if strings.Contains(strings.ToLower(err.Error()), "invalid date format") {
+			status = fiber.StatusBadRequest
+		}
+
+		return c.Status(status).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	return c.Send(pdfBytes)
+}
+
+// ExportLast30DaysSalesReportPDF exports previous 30 completed operational business days as PDF.
+// GET /api/admin/analytics/reports/last-30-days
+func (h *DashboardHandler) ExportLast30DaysSalesReportPDF(c *fiber.Ctx) error {
+	pdfBytes, filename, err := h.dashboardService.GenerateLast30DaysSalesReportPDF(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to generate 30-day report",
+		})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	return c.Send(pdfBytes)
+}
+
 // SSEEvents handles Server-Sent Events for real-time updates
 // GET /api/admin/events
 func (h *DashboardHandler) SSEEvents(c *fiber.Ctx) error {

@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ProductRepository defines the interface for product data access
 type ProductRepository interface {
@@ -19,6 +22,7 @@ type OrderRepository interface {
 	GetByID(ctx context.Context, id string) (*Order, error)
 	GetByUserID(ctx context.Context, userID string) ([]*Order, error)
 	GetByPhone(ctx context.Context, phone string) ([]*Order, error)
+	GetByDateRangeAndStatuses(ctx context.Context, start time.Time, end time.Time, statuses []OrderStatus) ([]*Order, error)
 	UpdateStatus(ctx context.Context, id string, status OrderStatus) error
 	UpdateStatusWithActor(ctx context.Context, id string, status OrderStatus, actorUserID string) error
 	GetAllWithFilters(ctx context.Context, status string, limit int) ([]*Order, error)
