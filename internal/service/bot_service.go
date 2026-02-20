@@ -22,6 +22,18 @@ type BotService struct {
 	UserRepo  core.UserRepository
 }
 
+var fixedCategoryOrder = []string{
+	"Cocktails",
+	"Chasers",
+	"Gin",
+	"Whisky",
+	"Spirits",
+	"Vodka",
+	"Brandy",
+	"Rum",
+	"Shots",
+}
+
 // State constants
 const (
 	StateStart                  = "START"
@@ -52,6 +64,47 @@ func sortProductsAlphabetically(products []*core.Product) []*core.Product {
 		return strings.ToLower(sorted[i].Name) < strings.ToLower(sorted[j].Name)
 	})
 	return sorted
+}
+
+// buildOrderedCategories returns categories in fixed order and appends unknown ones after.
+func buildOrderedCategories(menu map[string][]*core.Product) []string {
+	categories := make([]string, 0, len(fixedCategoryOrder)+len(menu))
+	seen := make(map[string]struct{}, len(fixedCategoryOrder)+len(menu))
+
+	for _, category := range fixedCategoryOrder {
+		categories = append(categories, category)
+		seen[category] = struct{}{}
+	}
+
+	extraCategories := make([]string, 0, len(menu))
+	for category := range menu {
+		if _, exists := seen[category]; exists {
+			continue
+		}
+		extraCategories = append(extraCategories, category)
+	}
+
+	sort.Slice(extraCategories, func(i, j int) bool {
+		return strings.ToLower(extraCategories[i]) < strings.ToLower(extraCategories[j])
+	})
+
+	categories = append(categories, extraCategories...)
+
+	// Limit to 10 categories (WhatsApp list limit)
+	if len(categories) > 10 {
+		categories = categories[:10]
+	}
+
+	return categories
+}
+
+func isCategoryInList(categories []string, target string) bool {
+	for _, category := range categories {
+		if category == target {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleIncomingMessage processes incoming WhatsApp messages
@@ -137,16 +190,7 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 			return fmt.Errorf("failed to get menu: %w", err)
 		}
 
-		// Extract category names
-		categories := make([]string, 0, len(menu))
-		for category := range menu {
-			categories = append(categories, category)
-		}
-
-		// Limit to 10 categories (WhatsApp list limit)
-		if len(categories) > 10 {
-			categories = categories[:10]
-		}
+		categories := buildOrderedCategories(menu)
 
 		// Send category list directly
 		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
@@ -166,16 +210,7 @@ func (b *BotService) handleStart(ctx context.Context, phone string, session *cor
 			return fmt.Errorf("failed to get menu: %w", err)
 		}
 
-		// Extract category names
-		categories := make([]string, 0, len(menu))
-		for category := range menu {
-			categories = append(categories, category)
-		}
-
-		// Limit to 10 categories (WhatsApp list limit)
-		if len(categories) > 10 {
-			categories = categories[:10]
-		}
+		categories := buildOrderedCategories(menu)
 
 		// Send category list directly (no welcome message needed)
 		if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
@@ -248,15 +283,7 @@ func (b *BotService) handleMenu(ctx context.Context, phone string, session *core
 			return fmt.Errorf("failed to get menu: %w", err)
 		}
 
-		categories := make([]string, 0, len(menu))
-		for category := range menu {
-			categories = append(categories, category)
-		}
-
-		// Limit to 10 categories (WhatsApp list limit)
-		if len(categories) > 10 {
-			categories = categories[:10]
-		}
+		categories := buildOrderedCategories(menu)
 
 		errorMsg := "That menu is expired. Here is the latest one."
 		// Send error message first, then the list
@@ -279,16 +306,7 @@ func (b *BotService) handleMenu(ctx context.Context, phone string, session *core
 		return fmt.Errorf("failed to get menu: %w", err)
 	}
 
-	// Extract category names
-	categories := make([]string, 0, len(menu))
-	for category := range menu {
-		categories = append(categories, category)
-	}
-
-	// Limit to 10 categories (WhatsApp list limit)
-	if len(categories) > 10 {
-		categories = categories[:10]
-	}
+	categories := buildOrderedCategories(menu)
 
 	// Send category list using interactive list
 	if err := b.WhatsApp.SendCategoryList(ctx, phone, categories); err != nil {
@@ -311,19 +329,10 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 	// Trust the category ID from list_reply (exact match)
 	selectedCategory := strings.TrimSpace(message)
 
-	// Check if category exists in menu
-	products, categoryExists := menu[selectedCategory]
-	if !categoryExists {
+	orderedCategories := buildOrderedCategories(menu)
+	if !isCategoryInList(orderedCategories, selectedCategory) {
 		// Invalid category - resend the category list
-		categories := make([]string, 0, len(menu))
-		for category := range menu {
-			categories = append(categories, category)
-		}
-
-		// Limit to 10 categories (WhatsApp list limit)
-		if len(categories) > 10 {
-			categories = categories[:10]
-		}
+		categories := orderedCategories
 
 		errorMsg := "That menu is expired. Here is the latest one."
 		// Send error message first, then the list
@@ -338,6 +347,9 @@ func (b *BotService) handleBrowsing(ctx context.Context, phone string, session *
 		// Keep state as BROWSING
 		return b.Session.Set(ctx, phone, session, 7200)
 	}
+
+	// Category is valid in UI order; it may still have no active products in DB.
+	products := menu[selectedCategory]
 
 	// Get products for this category
 	if len(products) == 0 {
