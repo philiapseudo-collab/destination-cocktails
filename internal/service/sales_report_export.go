@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/dumu-tech/destination-cocktails/internal/core"
 	"github.com/jung-kurt/gofpdf"
@@ -25,11 +26,9 @@ var settledSalesStatuses = []core.OrderStatus{
 // GenerateDailySalesReportPDF generates a PDF report for one operational business day.
 // Business day window: 07:00 EAT to next day 06:59:59 EAT.
 func (s *DashboardService) GenerateDailySalesReportPDF(ctx context.Context, businessDate string) ([]byte, string, error) {
-	loc, err := time.LoadLocation(reportTimezoneName)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to load timezone: %w", err)
-	}
+	loc := reportLocation()
 
+	var err error
 	targetDate, err := resolveBusinessDate(businessDate, loc)
 	if err != nil {
 		return nil, "", err
@@ -54,10 +53,7 @@ func (s *DashboardService) GenerateDailySalesReportPDF(ctx context.Context, busi
 // GenerateLast30DaysSalesReportPDF generates a PDF report for the previous 30 completed operational days.
 // Window always ends on yesterday business date (not today's in-progress business date).
 func (s *DashboardService) GenerateLast30DaysSalesReportPDF(ctx context.Context) ([]byte, string, error) {
-	loc, err := time.LoadLocation(reportTimezoneName)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to load timezone: %w", err)
-	}
+	loc := reportLocation()
 
 	nowLocal := time.Now().In(loc)
 	currentBusinessDate := currentBusinessDateInLocation(nowLocal, loc)
@@ -79,6 +75,16 @@ func (s *DashboardService) GenerateLast30DaysSalesReportPDF(ctx context.Context)
 
 	filename := fmt.Sprintf("sales-30-days-%s.pdf", endBusinessDate.Format("2006-01-02"))
 	return pdfBytes, filename, nil
+}
+
+func reportLocation() *time.Location {
+	loc, err := time.LoadLocation(reportTimezoneName)
+	if err == nil {
+		return loc
+	}
+
+	// Fallback for minimal container images missing IANA zone files.
+	return time.FixedZone("EAT", 3*60*60)
 }
 
 func (s *DashboardService) buildSalesReport(
